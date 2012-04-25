@@ -1,2 +1,2 @@
 BaseOfTree := .
-include Localize.mk
+include LocalMake.mk

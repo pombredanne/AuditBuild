@@ -1,6 +1,6 @@
-This is a sample GNU make "wrapper makefile" system designed to
-transparently do builds in a local filesystem while allowing the
-user to work (edit, test, check in/out) in a more flexible
+This is a sample GNU make "wrapper makefile" system designed
+to transparently do builds in a local filesystem while allowing
+the user to work (edit, test, check in/out) in a more flexible
 NFS-mounted tree. The working tree is silently rsynced with the
 specified local area, the build is done there, and the results
 rsynced back. None of this comes into play unless a local build
@@ -11,22 +11,22 @@ HOW IT WORKS:
 Assume the prior existence of a working build tree with a file
 called "Makefile" at its base. We want to be able to superimpose
 this feature without changing or breaking that. This is done by
-adding two new files "GNUmakefile" and "Localize.mk" without
+adding two new files "GNUmakefile" and "LocalMake.mk" without
 disturbing any existing files, including the Makefile.
 
 Since GNUMakefile takes precedence over Makefile, running "make"
-will now open GNUMakefile which simply includes Localize.mk.  If
-Localize.mk does not see a local build area specified, it it
-turns just includes Makefile and thus the situation devolves to
-what it was before. If it does see a local build area, it copies
-the tree in which it sits to the local area and reinvokes make
-there.
+will now open GNUMakefile which simply includes LocalMake.mk.
+If LocalMake.mk does not see a local build area specified, it
+it turns just includes Makefile and thus the situation devolves
+to what it was before. If it does see a local build area, it
+copies the tree in which it sits to the local area and reinvokes
+make there.
 
 The reason for having both files is to centralize the localization
-logic. The Localize.mk file can live in one place and be shared by
-a number of one-line GNUmakefiles which include it.
+logic. The LocalMake.mk file can live in one place and be shared
+by a number of one-line GNUmakefiles which include it.
 
-Note: although this implementation is GPL, it exists primarily to
-illustrate ideas which are not themselves licensed or licensable.
-It should be trivial to transfer the ideas without GPL
-contamination, which is explicitly the intended use.
+Note: although this implementation is GPL, it exists primarily
+to illustrate ideas which are not themselves licensed or
+licensable.  It should be trivial to transfer the ideas without
+GPL contamination, which is explicitly the intended use.
