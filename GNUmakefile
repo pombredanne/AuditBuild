@@ -1,0 +1,2 @@
+BaseOfTree := .
+include Localize.mk
