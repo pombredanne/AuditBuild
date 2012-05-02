@@ -13,7 +13,7 @@ ifneq (,$(and $(MLDIR),$(filter-out $(MLDIR)%,$(CURDIR))))
     ifeq (clean,$(findstring clean,$(MAKECMDGOALS)))
 	$(MAKE) $(_LocalMakeFlags) $(MAKECMDGOALS)
     else
-	$(strip LocalMake -B $(BaseOfTree) -L $(MLDIR) $(MLFLAGS) -- \
+	$(strip LocalMake -b $(BaseOfTree) -l $(MLDIR) $(MLFLAGS) -- \
 	    $(MAKE) $(_LocalMakeFlags) $(_LocalOverrides) $(MAKECMDGOALS))
     endif
   $(MAKEFILE_LIST): ;

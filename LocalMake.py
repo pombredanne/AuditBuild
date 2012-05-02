@@ -192,31 +192,39 @@ def get_ref_time(localdir):
 
 def main(argv):
   """Do an audited GNU make build, optionally moved to a local directory.
+
+  The default build auditing mechanism here is the simplest possible.
+  The build is started and the time it began is noted. Afterward, all
+  files in the build tree are stat-ed. If their modification time (mtime)
+  is newer than the reference time they're considered to be build artifacts,
+  aka targets. If only the access time (atime) is newer, they're considered
+  to be source files, aka prerequisites. If neither, they were not used in the
+  build.
   """
 
   global prog
   prog = os.path.basename(argv[0])
 
   msg = prog
-  msg += ' -B|--base-dir <directory path>'
-  msg += ' -L|--local-dir <directory path>'
+  msg += ' -b|--base-dir <dir>'
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
   msg += ' -k|--key'
-  msg += ' -r|--retry-with-fresh'
-  msg += ' command...'
+  msg += ' -l|--local-dir <dir>'
+  msg += ' -r|--retry-fresh'
+  msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
-  parser.add_option('-B', '--base-dir', type='string',
+  parser.add_option('-b', '--base-dir', type='string',
           help='Path to root of source tree (required)')
-  parser.add_option('-L', '--local-dir', type='string',
-          help='Path of local directory')
   parser.add_option('-e', '--edit', action='store_true',
           help='Fix generated text files to use ${MLDIR}')
   parser.add_option('-f', '--fresh', action='store_true',
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
           help='Key uniquely describing what was built')
-  parser.add_option('-r', '--retry-with-fresh', action='store_true',
+  parser.add_option('-l', '--local-dir', type='string',
+          help='Path of local directory')
+  parser.add_option('-r', '--retry-fresh', action='store_true',
           help='On build failure, try a full fresh rebuild')
 
   (options, left) = parser.parse_args(argv[1:])
@@ -325,8 +333,8 @@ def main(argv):
       mldir = local_dir + os.sep
       for line in fileinput.input(tgts, inplace=True):
         sys.stdout.write(re.sub(mldir, '${MLDIR}/', line))
-  elif options.retry_with_fresh and local_dir:
-# TODO: --fresh and --retry-with-fresh should be marked incompatible.
+  elif options.retry_fresh and local_dir:
+# TODO: --fresh and --retry-fresh should be marked incompatible.
     nargv = []
     for arg in argv:
       if not re.match(r'(-r|--retry)', arg):
