@@ -133,10 +133,12 @@ class BuildAudit:
     return self.file
 
   def add_prereq(self, path, delta):
-    self.prereqs[path] = delta
+    if not self.is_recorded(path):
+      self.prereqs[path] = delta
 
   def add_target(self, path, delta):
-    self.targets[path] = delta
+    if not self.is_recorded(path):
+      self.targets[path] = delta
 
   def get_prereqs(self):
     return self.prereqs
@@ -267,14 +269,15 @@ def main(argv):
               '--exclude=' + os.path.basename(audit.get_file()),
               base_dir + os.sep, build_base]
     if options.fresh:
-      copy_out_cmd.insert(3, '--exclude-from=-')
-      verbose(copy_out_cmd)
-      svnstat = subprocess.Popen(['svn', 'status', '--no-ignore'], \
-                stdout=subprocess.PIPE, cwd=base_dir)
+      stat_cmd = ['svn', 'status', '--no-ignore']
+      verbose(stat_cmd)
+      svnstat = subprocess.Popen(stat_cmd, stdout=subprocess.PIPE, cwd=base_dir)
       privates = svnstat.communicate()[0]
       if svnstat.wait():
         sys.exit(2)
       os.makedirs(lwd)
+      copy_out_cmd.insert(3, '--exclude-from=-')
+      verbose(copy_out_cmd)
       rso = subprocess.Popen(copy_out_cmd, stdin=subprocess.PIPE)
       for line in privates.splitlines():
         rpath = re.sub(r'^[I?]\s+', '', line)
@@ -315,8 +318,6 @@ def main(argv):
       for file_name in file_names:
         path = os.path.join(parent, file_name)
         stats = os.lstat(path)
-        if audit.is_recorded(path):
-          continue
         adelta = stats.st_atime - reftime
         if adelta < 0:
           continue
@@ -329,7 +330,8 @@ def main(argv):
           audit.add_prereq(rpath, adelta)
     audit.dump()
     if local_dir and options.edit:
-      tgts = [t for t in updated_targets if re.search(r'\.(cmd|depend)$', t)]
+      # TODO: it would be more general to implement a test for text files here.
+      tgts = [t for t in updated_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
       mldir = local_dir + os.sep
       for line in fileinput.input(tgts, inplace=True):
         sys.stdout.write(re.sub(mldir, '${MLDIR}/', line))
