@@ -21,6 +21,7 @@ class GMakeCommand(object):
   production build. This class attempts to categorize the command line
   in these ways and produce a unique key composed from the targets and
   variable assignments.
+
   """
   class PassThroughOptionParser(optparse.OptionParser):
     """Subclass of OptionParser which passes unrecognized flags through."""
@@ -34,6 +35,7 @@ class GMakeCommand(object):
   def __init__(self, argv):
     self.argv = argv
 
+    # Strip out the flags which don't change build artifacts.
     parse_ignored = GMakeCommand.PassThroughOptionParser()
     parse_ignored.add_option('-f', '--file', type='string')
     parse_ignored.add_option('-j', '--jobs', type='string')
@@ -44,6 +46,15 @@ class GMakeCommand(object):
     parse_ignored.add_option(      '--warn-undefined-variables', action='store_true')
     (ignored_opts, survivors) = parse_ignored.parse_args(argv[1:])
 
+    # Grab the flag that changes the actual build dir if present;
+    # we'll need it.
+    parse_dir = GMakeCommand.PassThroughOptionParser()
+    parse_dir.add_option('-C', '--directory', type='string')
+    (dir_opts, leftovers) = parse_dir.parse_args(survivors)
+    self.directory = dir_opts.directory if dir_opts.directory else '.'
+
+    # Look for the flags that mark this as a special case make,
+    # one which is not worth auditing.
     parse_spec = GMakeCommand.PassThroughOptionParser()
     parse_spec.add_option('-B', '--always-make', action='store_true', dest="set")
     parse_spec.add_option('-e', '--environment-overrides', action='store_true', dest="set")
@@ -61,7 +72,7 @@ class GMakeCommand(object):
     parse_spec.add_option('-t', '--touch', action='store_true', dest="set")
     parse_spec.add_option('-v', '--version', action='store_true', dest="set")
     parse_spec.add_option('-W', '--what-if', action='store_true', dest="set")
-    (special_opts, remains) = parse_spec.parse_args(survivors)
+    (special_opts, remains) = parse_spec.parse_args(leftovers)
     self.special = True if special_opts.set is not None else False
 
     makeflags = os.getenv('MAKEFLAGS', '')
@@ -76,10 +87,10 @@ class GMakeCommand(object):
       self.dry_run = False
 
     keys = []
-    for r in remains:
-      if re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', r):
+    for word in remains:
+      if re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', word):
         continue
-      keys.append(r)
+      keys.append(word)
 
     self.key = '_'.join(sorted(keys))
     self.key = re.sub(os.sep, '@', self.key)
@@ -91,6 +102,9 @@ class GMakeCommand(object):
 
   def get_key(self):
     return self.key
+
+  def get_directory(self):
+    return self.directory
 
   def is_special_case(self):
     return self.special
@@ -111,10 +125,11 @@ class BuildAudit:
   any file modified as a target. This class manages a data structure
   categorizing the two sets. It also records the time delta for each file from
   start of build until last use.
+
   """
-  def __init__(self, key, replace):
+  def __init__(self, file, key, replace):
+    self.file = file
     self.key = key
-    self.file = 'Audit.json'
     try:
       json_fp = open(self.file, "r")
       self.db = json.load(json_fp)
@@ -176,6 +191,7 @@ def get_ref_time(localdir):
   return a timestamp value older than any file subsequently accessed in
   the same filesystem and same thread, and newer than any file previously
   touched.
+
   """
   last_time = ref_time = 0
   while True:
@@ -265,6 +281,7 @@ def main(argv):
     lwd = cwd
 
   key = options.key if options.key else gmake.get_key()
+  auditfile = os.path.join(gmake.get_directory(), 'BuildAudit.json')
 
   if local_dir:
     if not os.path.exists(lwd):
@@ -272,7 +289,7 @@ def main(argv):
     elif options.fresh:
       shutil.rmtree(build_base)
 
-    audit = BuildAudit(key, options.fresh)
+    audit = BuildAudit(auditfile, key, options.fresh)
 
     copy_out_cmd = ['rsync', '-aC', '--delete',
               '--exclude=*.swp',
@@ -313,7 +330,7 @@ def main(argv):
         sys.exit(2)
     os.putenv('AM_DIR', local_dir)
   else:
-    audit = BuildAudit(key, options.fresh)
+    audit = BuildAudit(auditfile, key, options.fresh)
 
   reftime = get_ref_time(lwd)
 
@@ -326,6 +343,8 @@ def main(argv):
       dir_names[:] = (dir_name for dir_name in dir_names if not dir_name.startswith('.'))
 
       for file_name in file_names:
+        if file_name == os.path.basename(audit.get_file()):
+          continue
         path = os.path.join(parent, file_name)
         stats = os.lstat(path)
         adelta = stats.st_atime - reftime
