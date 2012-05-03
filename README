@@ -1,32 +1,42 @@
-This is a sample GNU make "wrapper makefile" system designed
-to transparently do builds in a local filesystem while allowing
-the user to work (edit, test, check in/out) in a more flexible
-NFS-mounted tree. The working tree is silently rsynced with the
-specified local area, the build is done there, and the results
-rsynced back. None of this comes into play unless a local build
-area is specified.
+This is a sample wrapper-makefile-plus-script designed to do an
+audited GNU make build, optionally offloaded to a local directory.
+The script can be used standalone; the make wrapper logic is an
+optional convenience.
 
-HOW IT WORKS:
+HOW THE MAKE WRAPPER WORKS:
 
-Assume the prior existence of a working build tree with a file
-called "Makefile" at its base. We want to be able to superimpose
-this feature without changing or breaking that. This is done by
-adding two new files "GNUmakefile" and "LocalMake.mk" without
-disturbing any existing files, including the Makefile.
+Assume the prior existence of a working source tree with a file
+called "Makefile" at its base which builds it. We want to be able
+to superimpose the auditing feature without disturbing that. This
+is done by adding two new files "GNUmakefile" and "AuditMake.mk"
+with (ideally) no need to change any existing files.
 
-Since GNUMakefile takes precedence over Makefile, running "make"
-will now open GNUMakefile which simply includes LocalMake.mk.
-If LocalMake.mk does not see a local build area specified, it
-it turns just includes Makefile and thus the situation devolves
-to what it was before. If it does see a local build area, it
-copies the tree in which it sits to the local area and reinvokes
-make there.
+Since "GNUMakefile" takes precedence over "Makefile", make will
+now open GNUMakefile which simply points to the base of the build
+tree and includes AuditMake.mk. AuditMake.mk in turn runs the
+AuditMake script, passing it the original make command line.
+The script runs the original make command while implementing the
+auditing logic described.
 
-The reason for having both files is to centralize the localization
-logic. The LocalMake.mk file can live in one place and be shared
-by a number of one-line GNUmakefiles which include it.
+The reason for having both GNUmakefile and AuditMake.mk is to
+centralize the complex logic. The AuditMake.mk file can live in
+one place and be shared by a number of trivial GNUmakefiles which
+include it.
 
-Note: although this implementation is GPL, it exists primarily
-to illustrate ideas which are not themselves licensed or
-licensable.  It should be trivial to transfer the ideas without
-GPL contamination, which is explicitly the intended use.
+HOW THE AUDITING SCRIPT WORKS:
+
+The build is started and the starting time noted. When it finishes,
+each file in the build tree is stat-ed. If its modification time
+(mtime) is newer than the starting time it's considered to be
+a build artifact, aka target. If only the access time (atime)
+is newer, it's considered a source file, aka prerequisite. If
+neither, it was unused. Results are kept in a simple dictionary
+structure keyed by build target.
+
+A mechanism is included for copying required files into a different
+directory tree, building there, and copying the results back.
+The most common use case would be to offload from an NFS-mounted
+area to a local filesystem, for speed reasons, but that is not
+required. The requirement is that the build filesystem update
+access times, i.e.  not be mounted with the "noatime" option. NFS
+mounts often employ "noatime" as an optimization.

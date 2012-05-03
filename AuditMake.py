@@ -16,8 +16,8 @@ class GMakeCommand(object):
 
   Some flags (e.g. -w) have no semantic content. Others (targets in
   particular) always do. Variable assignments may or may not but must
-  be assumed to change semantics. And then there's the category of flags
-  (-n, -d) which indicate that this is some kind of testing and not a 
+  be assumed to change semantics. Last, there's the category of flags
+  (-n, -d) which indicate that this is some kind of test and not a 
   production build. This class attempts to categorize the command line
   in these ways and produce a unique key composed from the targets and
   variable assignments.
@@ -77,7 +77,7 @@ class GMakeCommand(object):
 
     keys = []
     for r in remains:
-      if re.match(r'(JOBS|PAR|V|VERBOSE|MLDIR|MLFLAGS)=', r):
+      if re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', r):
         continue
       keys.append(r)
 
@@ -195,20 +195,30 @@ def get_ref_time(localdir):
 def main(argv):
   """Do an audited GNU make build, optionally moved to a local directory.
 
-  The default build auditing mechanism here is the simplest possible.
-  The build is started and the time it began is noted. Afterward, all
-  files in the build tree are stat-ed. If their modification time (mtime)
-  is newer than the reference time they're considered to be build artifacts,
-  aka targets. If only the access time (atime) is newer, they're considered
-  to be source files, aka prerequisites. If neither, they were not used in the
-  build.
+  The default build auditing mechanism here is the simplest possible:
+  The build is started and the starting time noted. When it finishes,
+  each file in the build tree is stat-ed. If its modification time
+  (mtime) is newer than the starting time it's considered to be
+  a build artifact, aka target. If only the access time (atime)
+  is newer, it's considered a source file, aka prerequisite. If
+  neither, it was unused. Results are kept in a simple dictionary
+  structure keyed by build target.
+
+  A mechanism is included for copying required files into a different
+  directory tree, building there, and copying the results back.
+  The most common use case would be to offload from an NFS-mounted
+  area to a local filesystem, for speed reasons, but that is not
+  required. The requirement is that the build filesystem update
+  access times, i.e.  not be mounted with the "noatime" option. NFS
+  mounts often employ "noatime" as an optimization.
+
   """
 
   global prog
   prog = os.path.basename(argv[0])
 
   msg = prog
-  msg += ' -b|--base-dir <dir>'
+  msg += ' -b|--base-of-tree <dir>'
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
   msg += ' -k|--key'
@@ -216,10 +226,10 @@ def main(argv):
   msg += ' -r|--retry-fresh'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
-  parser.add_option('-b', '--base-dir', type='string',
+  parser.add_option('-b', '--base-of-tree', type='string',
           help='Path to root of source tree (required)')
   parser.add_option('-e', '--edit', action='store_true',
-          help='Fix generated text files to use ${MLDIR}')
+          help='Fix generated text files to use ${AM_DIR}')
   parser.add_option('-f', '--fresh', action='store_true',
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
@@ -230,7 +240,7 @@ def main(argv):
           help='On build failure, try a full fresh rebuild')
 
   (options, left) = parser.parse_args(argv[1:])
-  if len(left) == 0 or not options.base_dir:
+  if len(left) == 0 or not options.base_of_tree:
     main([argv[0], "-h"])
 
   cwd = os.getcwd()
@@ -243,7 +253,7 @@ def main(argv):
     rc = gmake.execute_in(cwd)
     sys.exit(rc)
 
-  base_dir = os.path.abspath(options.base_dir)
+  base_dir = os.path.abspath(options.base_of_tree)
 
   if options.local_dir:
     local_dir = os.path.abspath(options.local_dir)
@@ -301,7 +311,7 @@ def main(argv):
       rso.stdin.close()
       if rso.wait():
         sys.exit(2)
-    os.putenv('MLDIR', local_dir)
+    os.putenv('AM_DIR', local_dir)
   else:
     audit = BuildAudit(key, options.fresh)
 
@@ -334,7 +344,7 @@ def main(argv):
       tgts = [t for t in updated_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
       mldir = local_dir + os.sep
       for line in fileinput.input(tgts, inplace=True):
-        sys.stdout.write(re.sub(mldir, '${MLDIR}/', line))
+        sys.stdout.write(re.sub(mldir, '${AM_DIR}/', line))
   elif options.retry_fresh and local_dir:
 # TODO: --fresh and --retry-fresh should be marked incompatible.
     nargv = []
