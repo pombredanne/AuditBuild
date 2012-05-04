@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 class GMakeCommand(object):
   """Parse a GNU make command line to see which args affect build output.
@@ -17,7 +18,7 @@ class GMakeCommand(object):
   Some flags (e.g. -w) have no semantic content. Others (targets in
   particular) always do. Variable assignments may or may not but must
   be assumed to change semantics. Last, there's the category of flags
-  (-n, -d) which indicate that this is some kind of test and not a 
+  (-n, -d) which indicate that this is some kind of test and not a
   production build. This class attempts to categorize the command line
   in these ways and produce a unique key composed from the targets and
   variable assignments.
@@ -44,16 +45,16 @@ class GMakeCommand(object):
     parse_ignored.add_option('-w', '--print-directory', action='store_true')
     parse_ignored.add_option(      '--no-print-directory', action='store_true')
     parse_ignored.add_option(      '--warn-undefined-variables', action='store_true')
-    (ignored_opts, survivors) = parse_ignored.parse_args(argv[1:])
+    ignored_opts, survivors = parse_ignored.parse_args(argv[1:])
 
     # Grab the flag that changes the actual build dir if present;
     # we'll need it.
     parse_dir = GMakeCommand.PassThroughOptionParser()
     parse_dir.add_option('-C', '--directory', type='string')
-    (dir_opts, leftovers) = parse_dir.parse_args(survivors)
-    self.directory = dir_opts.directory if dir_opts.directory else '.'
+    dir_opts, leftovers = parse_dir.parse_args(survivors)
+    self.subdir = dir_opts.directory if dir_opts.directory else '.'
 
-    # Look for the flags that mark this as a special case make,
+    # Look for the flags that mark this as a special case build,
     # one which is not worth auditing.
     parse_spec = GMakeCommand.PassThroughOptionParser()
     parse_spec.add_option('-B', '--always-make', action='store_true', dest="set")
@@ -72,50 +73,36 @@ class GMakeCommand(object):
     parse_spec.add_option('-t', '--touch', action='store_true', dest="set")
     parse_spec.add_option('-v', '--version', action='store_true', dest="set")
     parse_spec.add_option('-W', '--what-if', action='store_true', dest="set")
-    (special_opts, remains) = parse_spec.parse_args(leftovers)
-    self.special = True if special_opts.set is not None else False
+    special_opts, remains = parse_spec.parse_args(leftovers)
+    self.special_case = True if special_opts.set is not None else False
 
     makeflags = os.getenv('MAKEFLAGS', '')
     makeflags = re.sub(r'\s+--\s+.*', '', makeflags)
     makeflags = re.sub(r'\s*--\S+', '', makeflags)
     makeflags = re.sub(r'\S+=\S+', '', makeflags)
     if re.search(r'[BeIikLnopqRrStvW]', makeflags):
-      self.special = True
-    if re.search(r'[n]', makeflags):
-      self.dry_run = True
-    else:
-      self.dry_run = False
+      self.special_case = True
+    self.dry_run = 'n' in makeflags
 
     keys = []
     for word in remains:
-      if re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', word):
-        continue
-      keys.append(word)
+      if not re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', word):
+        keys.append(word)
 
-    self.key = '_'.join(sorted(keys))
-    self.key = re.sub(os.sep, '@', self.key)
-    if not self.key:
-      self.key = 'DEFAULT'
-
-  def get_argv(self):
-    return self.argv
-
-  def get_key(self):
-    return self.key
-
-  def get_directory(self):
-    return self.directory
-
-  def is_special_case(self):
-    return self.special
-
-  def is_dry_run(self):
-    return self.dry_run
+    if keys:
+      k = '_'.join(sorted(keys))
+      self.tgtkey = k.replace(os.sep, '@')
+    else:
+      self.tgtkey = 'DEFAULT'
 
   def execute_in(self, dir):
     verbose(self.argv)
-    retcode = subprocess.call(self.argv, cwd=dir)
-    return retcode
+    return subprocess.call(self.argv, cwd=dir)
+
+  def clean_in(self, dir):
+    cleancmd = [self.argv[0], 'clean']
+    verbose(cleancmd)
+    return subprocess.call(cleancmd, cwd=dir)
 
 class BuildAudit:
   """Class to manage and persist the audit of a build into prereqs and targets.
@@ -127,56 +114,53 @@ class BuildAudit:
   start of build until last use.
 
   """
-  def __init__(self, file, key, replace):
-    self.file = file
-    self.key = key
+  def __init__(self, dbdir):
+    self.dbfile = os.path.join(dbdir, 'BuildAudit.json')
     try:
-      json_fp = open(self.file, "r")
-      self.db = json.load(json_fp)
-      json_fp.close
+      self.db = json.load(open(self.dbfile))
     except IOError:
       self.db = {}
-    if replace or not self.key in self.db:
-      self.db[self.key] = {'PREREQS':{}, 'TARGETS':{}, 'ARGV':None}
-    self.db[self.key]['ARGV'] = sys.argv
-    self.prereqs = self.db[self.key]['PREREQS']
-    self.targets = self.db[self.key]['TARGETS']
-    self.prev_prereqs = self.prereqs.copy()
-    self.prev_targets = self.targets.copy()
+    self.audit = {'PREREQS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
+    self.new_prereqs = self.audit['PREREQS']
+    self.new_targets = self.audit['TARGETS']
 
-  def get_file(self):
-    return self.file
+  def old_prereqs(self, key):
+    return self.db[key]['PREREQS'] if key in self.db else {}
+
+  def old_targets(self, key):
+    return self.db[key]['TARGETS'] if key in self.db else {}
 
   def add_prereq(self, path, delta):
-    if not self.is_recorded(path):
-      self.prereqs[path] = delta
+    self.new_prereqs[path] = delta
 
   def add_target(self, path, delta):
-    if not self.is_recorded(path):
-      self.targets[path] = delta
+    self.new_targets[path] = delta
 
-  def get_prereqs(self):
-    return self.prereqs
+  def print_prereqs(self, key):
+    for p in sorted(self.old_prereqs(key)):
+      print p
 
-  def get_targets(self):
-    return self.targets
+  def print_targets(self, key):
+    for p in sorted(self.old_targets(key)):
+      print p
 
-  def is_recorded(self, path):
-    if path in self.prereqs:
-      return True
-    elif path in self.targets:
-      return True
+  def dump(self, key, replace):
+    if not self.new_prereqs:
+      warnings.warn("Empty prereq set - check for 'noatime' mount")
     else:
-      return False
-
-  def dump(self):
-    if any(True for k in self.prereqs if k not in self.prev_prereqs) or \
-       any(True for k in self.targets if k not in self.prev_targets):
-      print >> sys.stderr, "%s: updating database for '%s'" % (prog, self.key)
-      fp = open(self.file, "w")
-      json.dump(self.db, fp, indent=2)
-      fp.write('\n');  # json does not add trailing newline
-      fp.close
+      if replace or key not in self.db:
+        self.db[key] = {'PREREQS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
+      old_prqs = self.old_prereqs(key)
+      old_tgts = self.old_targets(key)
+      if set(self.new_prereqs) - set(old_prqs) or \
+         set(self.new_targets) - set(old_tgts):
+        self.new_prereqs.update(old_prqs)
+        self.new_targets.update(old_tgts)
+        self.db[key] = {'PREREQS':self.new_prereqs, 'TARGETS':self.new_targets, 'CMDLINE':sys.argv}
+        print >> sys.stderr, "%s: updating database for '%s'" % (prog, key)
+        with open(self.dbfile, "w") as fp:
+          json.dump(self.db, fp, indent=2)
+          fp.write('\n');  # json does not add trailing newline
 
 def verbose(cmd):
   """Print verbosity for executed subcommands."""
@@ -193,20 +177,30 @@ def get_ref_time(localdir):
   touched.
 
   """
-  last_time = ref_time = 0
-  while True:
-    fp = tempfile.TemporaryFile(dir=localdir)
-    refstat = os.fstat(fp.fileno())
-    this_time = refstat.st_mtime
-    fp.close
-    if last_time > 0:
-      if ref_time > 0 and this_time > last_time:
+  def get_time_past(previous):
+    this_time = 0
+    while True:
+      with tempfile.TemporaryFile(dir=localdir) as fp:
+        this_time = os.fstat(fp.fileno()).st_mtime
+      if this_time > previous:
         break
-      elif this_time > last_time:
-        ref_time = this_time
-    last_time = this_time
-    time.sleep(0.1)
+      time.sleep(0.1)
+    return this_time
+
+  old_time = get_time_past(0)
+  ref_time = get_time_past(old_time)
+  # Don't need to wait the second interval since comparisons are >= 0.
+  #new_time = get_time_past(ref_time)
   return ref_time
+
+def run_with_stdin(cmd, input):
+  verbose(cmd)
+  subproc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+  for line in input:
+    print >> subproc.stdin, line
+  subproc.stdin.close()
+  if subproc.wait():
+    sys.exit(2)
 
 def main(argv):
   """Do an audited GNU make build, optionally moved to a local directory.
@@ -224,8 +218,8 @@ def main(argv):
   directory tree, building there, and copying the results back.
   The most common use case would be to offload from an NFS-mounted
   area to a local filesystem, for speed reasons, but that is not
-  required. The requirement is that the build filesystem update
-  access times, i.e.  not be mounted with the "noatime" option. NFS
+  required. The requirement is that the build filesystem must update
+  access times, i.e. not be mounted with the "noatime" option. NFS
   mounts often employ "noatime" as an optimization.
 
   """
@@ -235,15 +229,20 @@ def main(argv):
 
   msg = prog
   msg += ' -b|--base-of-tree <dir>'
+  msg += ' -c|--clean'
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
   msg += ' -k|--key'
   msg += ' -l|--local-dir <dir>'
+  msg += ' -p|--print-prerequisites'
   msg += ' -r|--retry-fresh'
+  msg += ' -t|--print-targets'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
-          help='Path to root of source tree (required)')
+          help='Path to root of source tree')
+  parser.add_option('-c', '--clean', action='store_true',
+          help='Force a make clean ahead of the build')
   parser.add_option('-e', '--edit', action='store_true',
           help='Fix generated text files to use ${AM_DIR}')
   parser.add_option('-f', '--fresh', action='store_true',
@@ -252,98 +251,117 @@ def main(argv):
           help='Key uniquely describing what was built')
   parser.add_option('-l', '--local-dir', type='string',
           help='Path of local directory')
+  parser.add_option('-p', '--print-prereqs', action='store_true',
+          help='Print a list of known prerequisites for the given key')
   parser.add_option('-r', '--retry-fresh', action='store_true',
           help='On build failure, try a full fresh rebuild')
+  parser.add_option('-t', '--print-targets', action='store_true',
+          help='Print a list of known targets for the given key')
 
-  (options, left) = parser.parse_args(argv[1:])
-  if len(left) == 0 or not options.base_of_tree:
-    main([argv[0], "-h"])
+  options, left = parser.parse_args(argv[1:])
+  if options.fresh and options.retry_fresh:
+    parser.error("the --fresh and --retry-fresh options are incompatible")
+  if options.edit and not options.local_dir:
+    parser.error("the --edit option makes no sense without --local-dir")
+
+  base_dir = os.path.abspath(options.base_of_tree if options.base_of_tree else '.')
 
   cwd = os.getcwd()
 
-  gmake = GMakeCommand(left)
+  bldcmd = GMakeCommand(left)
 
-  if gmake.is_dry_run():
-    sys.exit(0)
-  elif gmake.is_special_case():
-    rc = gmake.execute_in(cwd)
-    sys.exit(rc)
-
-  base_dir = os.path.abspath(options.base_of_tree)
-
-  if options.local_dir:
+  if options.local_dir and not bldcmd.special_case:
     local_dir = os.path.abspath(options.local_dir)
     build_base = os.path.abspath(local_dir + os.sep + base_dir)
     lwd = os.path.abspath(local_dir + os.sep + cwd)
+    if not os.path.exists(lwd):
+      options.fresh = True
   else:
     local_dir = None
     build_base = base_dir
     lwd = cwd
 
-  key = options.key if options.key else gmake.get_key()
-  auditfile = os.path.join(gmake.get_directory(), 'BuildAudit.json')
+  if bldcmd.argv:
+    bldcmd.directory = lwd
+    audit = BuildAudit(bldcmd.subdir)
+  elif options.key:
+    audit = BuildAudit('.')
+    if not options.print_prereqs and not options.print_targets:
+      main([argv[0], "-h"])
+    if options.print_prereqs:
+      audit.print_prereqs(options.key)
+    if options.print_targets:
+      audit.print_targets(options.key)
+    sys.exit(0)
+  else:
+    main([argv[0], "-h"])
+
+  if bldcmd.dry_run:
+    sys.exit(0)
+  elif bldcmd.special_case:
+    rc = bldcmd.execute_in(cwd)
+    sys.exit(rc)
+
+  # Do an early make clean to get rid of existing artifacts
+  if options.fresh or options.clean:
+    if bldcmd.clean_in(cwd) != 0:
+      sys.exit(2)
+
+  key = options.key if options.key else bldcmd.tgtkey
 
   if local_dir:
-    if not os.path.exists(lwd):
-      options.fresh = True
-    elif options.fresh:
-      shutil.rmtree(build_base)
-
-    audit = BuildAudit(auditfile, key, options.fresh)
-
-    copy_out_cmd = ['rsync', '-aC', '--delete',
-              '--exclude=*.swp',
-              '--exclude=' + os.path.basename(audit.get_file()),
-              base_dir + os.sep, build_base]
     if options.fresh:
+      shutil.rmtree(build_base)
+      os.makedirs(lwd)
       stat_cmd = ['svn', 'status', '--no-ignore']
       verbose(stat_cmd)
       svnstat = subprocess.Popen(stat_cmd, stdout=subprocess.PIPE, cwd=base_dir)
       privates = svnstat.communicate()[0]
-      if svnstat.wait():
+      if svnstat.returncode != 0:
         sys.exit(2)
-      os.makedirs(lwd)
-      copy_out_cmd.insert(3, '--exclude-from=-')
-      verbose(copy_out_cmd)
-      rso = subprocess.Popen(copy_out_cmd, stdin=subprocess.PIPE)
+      feed_to_rsync = []
       for line in privates.splitlines():
         rpath = re.sub(r'^[I?]\s+', '', line)
         if rpath == line:
           continue
         if re.search(r'vers\w*\.h$', rpath):
           continue
-        apath = os.path.join(base_dir, rpath)
-        if os.path.isdir(apath):
+        if os.path.isdir(os.path.join(base_dir, rpath)):
           rpath += os.sep
-        print >> rso.stdin, rpath
-      rso.stdin.close()
-      if rso.wait():
-        sys.exit(2)
+        feed_to_rsync.append(rpath)
+      copy_out_cmd = ['rsync', '-aC', '--exclude-from=-']
     else:
-      copy_out_cmd.insert(3, '--files-from=-')
-      verbose(copy_out_cmd)
-      rso = subprocess.Popen(copy_out_cmd, stdin=subprocess.PIPE)
-      for prq in audit.get_prereqs():
-        print >> rso.stdin, prq
-      rso.stdin.close()
-      if rso.wait():
-        sys.exit(2)
+      if options.clean:
+        for tgt in audit.old_targets(key):
+          try:
+            os.remove(os.path.join(build_base, tgt))
+          except OSError:
+            pass
+      feed_to_rsync = audit.old_prereqs(key)
+      copy_out_cmd = ['rsync', '-aC', '--files-from=-']
+
+    copy_out_cmd.extend([
+        '--delete',
+        '--delete-excluded',
+        '--exclude=*.swp',
+        '--exclude=' + os.path.basename(audit.dbfile),
+        base_dir + os.sep,
+        build_base])
+    run_with_stdin(copy_out_cmd, feed_to_rsync)
+
     os.putenv('AM_DIR', local_dir)
-  else:
-    audit = BuildAudit(auditfile, key, options.fresh)
 
   reftime = get_ref_time(lwd)
 
-  rc = gmake.execute_in(lwd)
+  rc = bldcmd.execute_in(lwd)
 
   if rc == 0:
-    updated_targets = []
     for parent, dir_names, file_names in os.walk(build_base):
       # Assume hidden dirs contain stuff we don't care about
-      dir_names[:] = (dir_name for dir_name in dir_names if not dir_name.startswith('.'))
+      dir_names[:] = (d for d in dir_names if not d.startswith('.'))
 
       for file_name in file_names:
-        if file_name == os.path.basename(audit.get_file()):
+        if file_name == os.path.basename(audit.dbfile):
           continue
         path = os.path.join(parent, file_name)
         stats = os.lstat(path)
@@ -354,39 +372,33 @@ def main(argv):
         rpath = os.path.relpath(path, build_base)
         if mdelta >= 0:
           audit.add_target(rpath, mdelta)
-          updated_targets.append(path)
         else:
           audit.add_prereq(rpath, adelta)
-    audit.dump()
-    if local_dir and options.edit:
-      # TODO: it would be more general to implement a test for text files here.
-      tgts = [t for t in updated_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
-      mldir = local_dir + os.sep
-      for line in fileinput.input(tgts, inplace=True):
-        sys.stdout.write(re.sub(mldir, '${AM_DIR}/', line))
+    audit.dump(key, options.fresh)
   elif options.retry_fresh and local_dir:
-# TODO: --fresh and --retry-fresh should be marked incompatible.
     nargv = []
     for arg in argv:
       if not re.match(r'(-r|--retry)', arg):
         nargv.append(arg)
     nargv.insert(1, '--fresh')
+    verbose(nargv)
     rc = subprocess.call(nargv)
     sys.exit(rc)
 
   if local_dir:
     copy_back_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
-    verbose(copy_back_cmd)
-    rso = subprocess.Popen(copy_back_cmd, stdin=subprocess.PIPE)
-    for tgt in audit.get_targets():
-      print >> rso.stdin, tgt
-    rso.stdin.close()
-    if rso.wait():
-      sys.exit(2)
+    run_with_stdin(copy_back_cmd, audit.new_targets)
+    if options.edit and audit.new_targets:
+      # TODO: better to write something like Perl's -T (text) test here
+      tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
+      if tgts:
+        mldir = local_dir + os.sep
+        for line in fileinput.input(tgts, inplace=True):
+          sys.stdout.write(line.replace(mldir, '/'))
 
   sys.exit(rc)
 
 if '__main__' == __name__:
   sys.exit(main(sys.argv))
 
-# vim: ts=8:sw=2:tw=80:et:
+# vim: ts=8:sw=2:tw=120:et:
