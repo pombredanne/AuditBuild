@@ -93,7 +93,7 @@ class GMakeCommand(object):
       k = '_'.join(sorted(keys))
       self.tgtkey = k.replace(os.sep, '@')
     else:
-      self.tgtkey = 'DEFAULT'
+      self.tgtkey = 'all'  # just by convention
 
   def execute_in(self, dir):
     verbose(self.argv)
@@ -108,10 +108,10 @@ class BuildAudit:
   """Class to manage and persist the audit of a build into prereqs and targets.
 
   The files used during a build can be categorized as prerequisites (read from)
-  and targets (written to). Some are both, but a write beats a read so we treat
-  any file modified as a target. This class manages a data structure
-  categorizing the two sets. It also records the time delta for each file from
-  start of build until last use.
+  and targets (written to). Some are both, but a write beats a read so any
+  modified file is treated as a target. This class manages a data structure
+  categorizing these file sets. It also records the time delta for each file from
+  start of build to last use.
 
   """
   def __init__(self, dbdir):
@@ -120,12 +120,20 @@ class BuildAudit:
       self.db = json.load(open(self.dbfile))
     except IOError:
       self.db = {}
-    self.audit = {'PREREQS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
+    self.audit = {'PREREQS':{}, 'INTERMS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
     self.new_prereqs = self.audit['PREREQS']
+    self.new_interms = self.audit['INTERMS']
     self.new_targets = self.audit['TARGETS']
+
+  def check(self, key):
+    if key not in self.db:
+      raise Exception("No such key: " + key)
 
   def old_prereqs(self, key):
     return self.db[key]['PREREQS'] if key in self.db else {}
+
+  def old_interms(self, key):
+    return self.db[key]['INTERMS'] if key in self.db else {}
 
   def old_targets(self, key):
     return self.db[key]['TARGETS'] if key in self.db else {}
@@ -133,30 +141,28 @@ class BuildAudit:
   def add_prereq(self, path, delta):
     self.new_prereqs[path] = delta
 
+  def add_interm(self, path, delta):
+    self.new_interms[path] = delta
+
   def add_target(self, path, delta):
     self.new_targets[path] = delta
-
-  def print_prereqs(self, key):
-    for p in sorted(self.old_prereqs(key)):
-      print p
-
-  def print_targets(self, key):
-    for p in sorted(self.old_targets(key)):
-      print p
 
   def dump(self, key, replace):
     if not self.new_prereqs:
       warnings.warn("Empty prereq set - check for 'noatime' mount")
     else:
       if replace or key not in self.db:
-        self.db[key] = {'PREREQS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
+        self.db[key] = {'PREREQS':{}, 'INTERMS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
       old_prqs = self.old_prereqs(key)
+      old_ints = self.old_interms(key)
       old_tgts = self.old_targets(key)
       if set(self.new_prereqs) - set(old_prqs) or \
+         set(self.new_interms) - set(old_ints) or \
          set(self.new_targets) - set(old_tgts):
         self.new_prereqs.update(old_prqs)
+        self.new_interms.update(old_ints)
         self.new_targets.update(old_tgts)
-        self.db[key] = {'PREREQS':self.new_prereqs, 'TARGETS':self.new_targets, 'CMDLINE':sys.argv}
+        self.db[key] = {'PREREQS':self.new_prereqs, 'INTERMS':self.new_interms, 'TARGETS':self.new_targets, 'CMDLINE':sys.argv}
         print >> sys.stderr, "%s: updating database for '%s'" % (prog, key)
         with open(self.dbfile, "w") as fp:
           json.dump(self.db, fp, indent=2)
@@ -234,9 +240,7 @@ def main(argv):
   msg += ' -f|--fresh'
   msg += ' -k|--key'
   msg += ' -l|--local-dir <dir>'
-  msg += ' -p|--print-prerequisites'
   msg += ' -r|--retry-fresh'
-  msg += ' -t|--print-targets'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
@@ -248,15 +252,11 @@ def main(argv):
   parser.add_option('-f', '--fresh', action='store_true',
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
-          help='Key uniquely describing what was built')
+          help='A key uniquely describing what was built')
   parser.add_option('-l', '--local-dir', type='string',
           help='Path of local directory')
-  parser.add_option('-p', '--print-prereqs', action='store_true',
-          help='Print a list of known prerequisites for the given key')
   parser.add_option('-r', '--retry-fresh', action='store_true',
           help='On build failure, try a full fresh rebuild')
-  parser.add_option('-t', '--print-targets', action='store_true',
-          help='Print a list of known targets for the given key')
 
   options, left = parser.parse_args(argv[1:])
   if options.fresh and options.retry_fresh:
@@ -284,15 +284,6 @@ def main(argv):
   if bldcmd.argv:
     bldcmd.directory = lwd
     audit = BuildAudit(bldcmd.subdir)
-  elif options.key:
-    audit = BuildAudit('.')
-    if not options.print_prereqs and not options.print_targets:
-      main([argv[0], "-h"])
-    if options.print_prereqs:
-      audit.print_prereqs(options.key)
-    if options.print_targets:
-      audit.print_targets(options.key)
-    sys.exit(0)
   else:
     main([argv[0], "-h"])
 
@@ -311,7 +302,8 @@ def main(argv):
 
   if local_dir:
     if options.fresh:
-      shutil.rmtree(build_base)
+      if os.path.exists(build_base):
+        shutil.rmtree(build_base)
       os.makedirs(lwd)
       stat_cmd = ['svn', 'status', '--no-ignore']
       verbose(stat_cmd)
@@ -364,15 +356,16 @@ def main(argv):
         if file_name == os.path.basename(audit.dbfile):
           continue
         path = os.path.join(parent, file_name)
+        rpath = os.path.relpath(path, build_base)
         stats = os.lstat(path)
         adelta = stats.st_atime - reftime
-        if adelta < 0:
-          continue
         mdelta = stats.st_mtime - reftime
-        rpath = os.path.relpath(path, build_base)
         if mdelta >= 0:
-          audit.add_target(rpath, mdelta)
-        else:
+          if adelta > mdelta:
+            audit.add_interm(rpath, adelta)
+          else:
+            audit.add_target(rpath, mdelta)
+        elif adelta >= 0:
           audit.add_prereq(rpath, adelta)
     audit.dump(key, options.fresh)
   elif options.retry_fresh and local_dir:
