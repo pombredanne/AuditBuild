@@ -84,25 +84,29 @@ class GMakeCommand(object):
       self.special_case = True
     self.dry_run = 'n' in makeflags
 
-    keys = []
+    self.assignments = []
+    self.targets = []
     for word in remains:
-      if not re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', word):
-        keys.append(word)
+      if '=' in word:
+        self.assignments.append(word)
+      else:
+        self.targets.append(word)
 
-    if keys:
-      k = '_'.join(sorted(keys))
-      self.tgtkey = k.replace(os.sep, '@')
+    assigns = []
+    for word in self.assignments:
+      if not re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', word):
+        assigns.append(word)
+    self.tgtkey = '__'.join(sorted(assigns))
+    if self.tgtkey:
+      self.tgtkey += ';'
+    if self.targets:
+      self.tgtkey += ':'.join(sorted(self.targets))
     else:
-      self.tgtkey = 'all'  # just by convention
+      self.tgtkey += 'all'  #just by convention
 
   def execute_in(self, dir):
     verbose(self.argv)
-    return subprocess.call(self.argv, cwd=dir)
-
-  def clean_in(self, dir):
-    cleancmd = [self.argv[0], 'clean']
-    verbose(cleancmd)
-    return subprocess.call(cleancmd, cwd=dir)
+    return subprocess.call(self.argv, cwd=dir, stdin=open(os.devnull))
 
 class BuildAudit:
   """Class to manage and persist the audit of a build into prereqs and targets.
@@ -114,20 +118,23 @@ class BuildAudit:
   start of build to last use.
 
   """
-  def __init__(self, dbdir):
-    self.dbfile = os.path.join(dbdir, 'BuildAudit.json')
+  def __init__(self, dbdir='.', dbname='BuildAudit.json'):
+    self.dbfile = os.path.join(dbdir, dbname)
     try:
       self.db = json.load(open(self.dbfile))
     except IOError:
       self.db = {}
-    self.audit = {'PREREQS':{}, 'INTERMS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
+    self.audit = {'PREREQS':{}, 'INTERMS':{}, 'TARGETS':{}, 'NOTUSED':{}, 'CMDLINE':sys.argv}
     self.new_prereqs = self.audit['PREREQS']
     self.new_interms = self.audit['INTERMS']
     self.new_targets = self.audit['TARGETS']
+    self.new_notused = self.audit['NOTUSED']
 
-  def check(self, key):
-    if key not in self.db:
-      raise Exception("No such key: " + key)
+  def has(self, key):
+    return key in self.db
+
+  def all_keys(self):
+    return sorted(self.db.keys())
 
   def old_prereqs(self, key):
     return self.db[key]['PREREQS'] if key in self.db else {}
@@ -138,21 +145,63 @@ class BuildAudit:
   def old_targets(self, key):
     return self.db[key]['TARGETS'] if key in self.db else {}
 
-  def add_prereq(self, path, delta):
-    self.new_prereqs[path] = delta
+  def old_notused(self, key):
+    return self.db[key]['NOTUSED'] if key in self.db else {}
 
-  def add_interm(self, path, delta):
-    self.new_interms[path] = delta
+  def get_reftime(self, indir):
+    """Return a unique file reference time.
 
-  def add_target(self, path, delta):
-    self.new_targets[path] = delta
+    Different filesystems have different granularities for time
+    stamps. For instance, ext3 records one-second granularity while
+    ext4 records nanoseconds. Regardless of host filesystem, this
+    method guarantees to return a timestamp value newer than any
+    file previously accessed within the same filesystem and same
+    thread, and no newer than any timestamp created subsequently.
 
-  def dump(self, key, replace):
+    """
+    def get_time_past(previous):
+      this_time = 0
+      while True:
+        with tempfile.TemporaryFile(dir=indir) as fp:
+          this_time = os.fstat(fp.fileno()).st_mtime
+        if this_time > previous:
+          break
+        time.sleep(0.1)
+      return this_time
+
+    old_time = get_time_past(0)
+    self.reftime = get_time_past(old_time)
+
+  def update(self, key, basedir, replace):
+    # Note: do NOT use os.walk to traverse the tree.
+    # It has a way of updating symlink atimes.
+    def visit(data, parent, files):
+      # Assume hidden dirs contain stuff we don't care about
+      if not parent.startswith('.'):
+        for f in files:
+          path = os.path.join(parent, f)
+          if not os.path.isdir(path):
+            rpath = os.path.relpath(path, basedir)
+            stats = os.lstat(path)
+            adelta = stats.st_atime - self.reftime
+            mdelta = stats.st_mtime - self.reftime
+            value = str(adelta) + ' ' + str(mdelta)
+            if mdelta >= 0:
+              if adelta > mdelta:
+                self.new_interms[rpath] = 'I ' + value
+              else:
+                self.new_targets[rpath] = 'T ' + value
+            elif adelta >= 0:
+              self.new_prereqs[rpath] = 'P ' + value
+            else:
+              self.new_notused[rpath] = 'N ' + value
+    os.path.walk(basedir, visit, None)
+
     if not self.new_prereqs:
       warnings.warn("Empty prereq set - check for 'noatime' mount")
     else:
-      if replace or key not in self.db:
-        self.db[key] = {'PREREQS':{}, 'INTERMS':{}, 'TARGETS':{}, 'CMDLINE':sys.argv}
+      if replace or not self.has(key):
+        self.db[key] = {'PREREQS':{}, 'INTERMS':{}, 'TARGETS':{}, 'NOTUSED':{}, 'CMDLINE':sys.argv}
       old_prqs = self.old_prereqs(key)
       old_ints = self.old_interms(key)
       old_tgts = self.old_targets(key)
@@ -162,7 +211,9 @@ class BuildAudit:
         self.new_prereqs.update(old_prqs)
         self.new_interms.update(old_ints)
         self.new_targets.update(old_tgts)
-        self.db[key] = {'PREREQS':self.new_prereqs, 'INTERMS':self.new_interms, 'TARGETS':self.new_targets, 'CMDLINE':sys.argv}
+        timestr = "%s (%s)" % (str(self.reftime), time.ctime(self.reftime))
+        self.db[key] = {'PREREQS':self.new_prereqs, 'INTERMS':self.new_interms, 'TARGETS':self.new_targets,
+            'NOTUSED':self.new_notused, 'CMDLINE':sys.argv, 'REFTIME':timestr}
         print >> sys.stderr, "%s: updating database for '%s'" % (prog, key)
         with open(self.dbfile, "w") as fp:
           json.dump(self.db, fp, indent=2)
@@ -171,33 +222,6 @@ class BuildAudit:
 def verbose(cmd):
   """Print verbosity for executed subcommands."""
   print >> sys.stderr, '+', ' '.join(cmd)
-
-def get_ref_time(localdir):
-  """Return a unique file reference time.
-
-  Different filesystems have different granularity for time stamps.
-  For instance, ext3 records only 1-second granularity while ext4 records
-  nanoseconds. Regardless of host filesystem, this function guarantees to
-  return a timestamp value older than any file subsequently accessed in
-  the same filesystem and same thread, and newer than any file previously
-  touched.
-
-  """
-  def get_time_past(previous):
-    this_time = 0
-    while True:
-      with tempfile.TemporaryFile(dir=localdir) as fp:
-        this_time = os.fstat(fp.fileno()).st_mtime
-      if this_time > previous:
-        break
-      time.sleep(0.1)
-    return this_time
-
-  old_time = get_time_past(0)
-  ref_time = get_time_past(old_time)
-  # Don't need to wait the second interval since comparisons are >= 0.
-  #new_time = get_time_past(ref_time)
-  return ref_time
 
 def run_with_stdin(cmd, input):
   verbose(cmd)
@@ -233,7 +257,7 @@ def main(argv):
   global prog
   prog = os.path.basename(argv[0])
 
-  msg = prog
+  msg = '%prog'
   msg += ' -b|--base-of-tree <dir>'
   msg += ' -c|--clean'
   msg += ' -e|--edit'
@@ -246,7 +270,7 @@ def main(argv):
   parser.add_option('-b', '--base-of-tree', type='string',
           help='Path to root of source tree')
   parser.add_option('-c', '--clean', action='store_true',
-          help='Force a make clean ahead of the build')
+          help='Force a clean ahead of the build')
   parser.add_option('-e', '--edit', action='store_true',
           help='Fix generated text files to use ${AM_DIR}')
   parser.add_option('-f', '--fresh', action='store_true',
@@ -283,7 +307,7 @@ def main(argv):
 
   if bldcmd.argv:
     bldcmd.directory = lwd
-    audit = BuildAudit(bldcmd.subdir)
+    audit = BuildAudit(dbdir=bldcmd.subdir)
   else:
     main([argv[0], "-h"])
 
@@ -293,21 +317,23 @@ def main(argv):
     rc = bldcmd.execute_in(cwd)
     sys.exit(rc)
 
-  # Do an early make clean to get rid of existing artifacts
-  if options.fresh or options.clean:
-    if bldcmd.clean_in(cwd) != 0:
-      sys.exit(2)
-
   key = options.key if options.key else bldcmd.tgtkey
+
+  if options.clean:
+    for tgt in audit.old_targets(key):
+      try:
+        os.remove(os.path.join(build_base, tgt))
+      except OSError:
+        pass
 
   if local_dir:
     if options.fresh:
       if os.path.exists(build_base):
         shutil.rmtree(build_base)
       os.makedirs(lwd)
-      stat_cmd = ['svn', 'status', '--no-ignore']
-      verbose(stat_cmd)
-      svnstat = subprocess.Popen(stat_cmd, stdout=subprocess.PIPE, cwd=base_dir)
+      svnstat = ['svn', 'status', '--no-ignore']
+      verbose(svnstat)
+      svnstat = subprocess.Popen(svnstat, stdout=subprocess.PIPE, cwd=base_dir)
       privates = svnstat.communicate()[0]
       if svnstat.returncode != 0:
         sys.exit(2)
@@ -321,16 +347,10 @@ def main(argv):
         if os.path.isdir(os.path.join(base_dir, rpath)):
           rpath += os.sep
         feed_to_rsync.append(rpath)
-      copy_out_cmd = ['rsync', '-aC', '--exclude-from=-']
+      copy_out_cmd = ['rsync', '-aC', '--include=core*', '--exclude-from=-']
     else:
-      if options.clean:
-        for tgt in audit.old_targets(key):
-          try:
-            os.remove(os.path.join(build_base, tgt))
-          except OSError:
-            pass
       feed_to_rsync = audit.old_prereqs(key)
-      copy_out_cmd = ['rsync', '-aC', '--files-from=-']
+      copy_out_cmd = ['rsync', '-a', '--files-from=-']
 
     copy_out_cmd.extend([
         '--delete',
@@ -343,31 +363,12 @@ def main(argv):
 
     os.putenv('AM_DIR', local_dir)
 
-  reftime = get_ref_time(lwd)
+  audit.get_reftime(lwd)
 
   rc = bldcmd.execute_in(lwd)
 
   if rc == 0:
-    for parent, dir_names, file_names in os.walk(build_base):
-      # Assume hidden dirs contain stuff we don't care about
-      dir_names[:] = (d for d in dir_names if not d.startswith('.'))
-
-      for file_name in file_names:
-        if file_name == os.path.basename(audit.dbfile):
-          continue
-        path = os.path.join(parent, file_name)
-        rpath = os.path.relpath(path, build_base)
-        stats = os.lstat(path)
-        adelta = stats.st_atime - reftime
-        mdelta = stats.st_mtime - reftime
-        if mdelta >= 0:
-          if adelta > mdelta:
-            audit.add_interm(rpath, adelta)
-          else:
-            audit.add_target(rpath, mdelta)
-        elif adelta >= 0:
-          audit.add_prereq(rpath, adelta)
-    audit.dump(key, options.fresh)
+    audit.update(key, build_base, options.fresh)
   elif options.retry_fresh and local_dir:
     nargv = []
     for arg in argv:
@@ -389,7 +390,7 @@ def main(argv):
         for line in fileinput.input(tgts, inplace=True):
           sys.stdout.write(line.replace(mldir, '/'))
 
-  sys.exit(rc)
+  return rc
 
 if '__main__' == __name__:
   sys.exit(main(sys.argv))
