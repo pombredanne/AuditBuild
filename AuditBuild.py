@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import datetime
 import fileinput
 import optparse
 import os
@@ -7,104 +8,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 from buildaudit import BuildAudit
-
-class GMakeCommand(object):
-  """Parse a GNU make command line to see which args affect build output.
-
-  Some flags (e.g. -w) have no semantic content. Others (targets in
-  particular) always do. Variable assignments may or may not but must
-  be assumed to change semantics. Last, there's the category of flags
-  (-n, -d) which indicate that this is some kind of test and not a
-  production build. This class attempts to categorize the command line
-  in these ways and produce a unique key composed from the targets and
-  variable assignments.
-
-  """
-  class PassThroughOptionParser(optparse.OptionParser):
-    """Subclass of OptionParser which passes unrecognized flags through."""
-    def _process_args(self, largs, rargs, values):
-      while rargs:
-        try:
-          optparse.OptionParser._process_args(self,largs,rargs,values)
-        except (optparse.BadOptionError,optparse.AmbiguousOptionError), e:
-          largs.append(e.opt_str)
-
-  def __init__(self, argv):
-    self.argv = argv
-
-    # Strip out the flags which don't change build artifacts.
-    parse_ignored = GMakeCommand.PassThroughOptionParser()
-    parse_ignored.add_option('-f', '--file', type='string')
-    parse_ignored.add_option('-j', '--jobs', type='string')
-    parse_ignored.add_option('-l', '--load-average', type='string')
-    parse_ignored.add_option('-s', '--silent', action='store_true')
-    parse_ignored.add_option('-w', '--print-directory', action='store_true')
-    parse_ignored.add_option(      '--no-print-directory', action='store_true')
-    parse_ignored.add_option(      '--warn-undefined-variables', action='store_true')
-    ignored_opts, survivors = parse_ignored.parse_args(argv[1:])
-
-    # Grab the flag that changes the actual build dir if present;
-    # we'll need it.
-    parse_dir = GMakeCommand.PassThroughOptionParser()
-    parse_dir.add_option('-C', '--directory', type='string')
-    dir_opts, leftovers = parse_dir.parse_args(survivors)
-    self.subdir = dir_opts.directory if dir_opts.directory else '.'
-
-    # Look for the flags that mark this as a special case build,
-    # one which is not worth auditing.
-    parse_spec = GMakeCommand.PassThroughOptionParser()
-    parse_spec.add_option('-B', '--always-make', action='store_true', dest="set")
-    parse_spec.add_option('-e', '--environment-overrides', action='store_true', dest="set")
-    parse_spec.add_option('-I', '--include-dir', type='string', dest="set")
-    parse_spec.add_option('-i', '--ignore-errors', action='store_true', dest="set")
-    parse_spec.add_option('-k', '--keep-going', action='store_true', dest="set")
-    parse_spec.add_option('-L', '--check-symlink-times', action='store_true', dest="set")
-    parse_spec.add_option('-n', '--dry-run', action='store_true', dest="set")
-    parse_spec.add_option('-o', '--old-file', type='string', dest="set")
-    parse_spec.add_option('-p', '--print-data-base', action='store_true', dest="set")
-    parse_spec.add_option('-q', '--question', action='store_true', dest="set")
-    parse_spec.add_option('-R', '--no-builtin-variables', action='store_true', dest="set")
-    parse_spec.add_option('-r', '--no-builtin-rules', action='store_true', dest="set")
-    parse_spec.add_option('-S', '--no-keep-going', action='store_true', dest="set")
-    parse_spec.add_option('-t', '--touch', action='store_true', dest="set")
-    parse_spec.add_option('-v', '--version', action='store_true', dest="set")
-    parse_spec.add_option('-W', '--what-if', action='store_true', dest="set")
-    special_opts, remains = parse_spec.parse_args(leftovers)
-    self.special_case = True if special_opts.set is not None else False
-
-    makeflags = os.getenv('MAKEFLAGS', '')
-    makeflags = re.sub(r'\s+--\s+.*', '', makeflags)
-    makeflags = re.sub(r'\s*--\S+', '', makeflags)
-    makeflags = re.sub(r'\S+=\S+', '', makeflags)
-    if re.search(r'[BeIikLnopqRrStvW]', makeflags):
-      self.special_case = True
-    self.dry_run = 'n' in makeflags
-
-    self.assignments = []
-    self.targets = []
-    for word in remains:
-      if '=' in word:
-        self.assignments.append(word)
-      else:
-        self.targets.append(word)
-
-    assigns = []
-    for word in self.assignments:
-      if not re.match(r'(JOBS|PAR|V|VERBOSE|AM_DIR|AM_FLAGS)=', word):
-        assigns.append(word)
-    self.tgtkey = '__'.join(sorted(assigns))
-    if self.tgtkey:
-      self.tgtkey += ';'
-    if self.targets:
-      self.tgtkey += ':'.join(sorted(self.targets))
-    else:
-      self.tgtkey += 'all'  #just by convention
-
-  def execute_in(self, dir):
-    verbose(self.argv)
-    return subprocess.call(self.argv, cwd=dir, stdin=open(os.devnull))
+from gmakecommand import GMakeCommand
 
 def verbose(cmd):
   """Print verbosity for executed subcommands."""
@@ -144,6 +51,8 @@ def main(argv):
   global prog
   prog = os.path.basename(argv[0])
 
+  start_time = time.time()
+
   msg = '%prog'
   msg += ' -b|--base-of-tree <dir>'
   msg += ' -c|--clean'
@@ -159,7 +68,7 @@ def main(argv):
   parser.add_option('-c', '--clean', action='store_true',
           help='Force a clean ahead of the build')
   parser.add_option('-e', '--edit', action='store_true',
-          help='Fix generated text files to use ${AM_DIR}')
+          help='Fix generated text files to use ${AB_DIR}')
   parser.add_option('-f', '--fresh', action='store_true',
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
@@ -248,14 +157,18 @@ def main(argv):
         build_base])
     run_with_stdin(copy_out_cmd, feed_to_rsync)
 
-    os.putenv('AM_DIR', local_dir)
+    os.putenv('AB_DIR', local_dir)
 
-  audit.get_reftime(lwd)
+  if options.fresh:
+    audit.prebuild(build_base)
 
   rc = bldcmd.execute_in(lwd)
 
+  bldtime = ''
   if rc == 0:
-    audit.update(key, build_base, options.fresh)
+    if options.fresh:
+      audit.update(key, build_base, bldcmd.end_time - bldcmd.start_time)
+      bldtime = " (build time: %s)" % (audit.bldtime(key))
   elif options.retry_fresh and local_dir:
     nargv = []
     for arg in argv:
@@ -268,14 +181,19 @@ def main(argv):
 
   if local_dir:
     copy_back_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
-    run_with_stdin(copy_back_cmd, audit.new_targets)
-    if options.edit and audit.new_targets:
-      # TODO: better to write something like Perl's -T (text) test here
-      tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
-      if tgts:
-        mldir = local_dir + os.sep
-        for line in fileinput.input(tgts, inplace=True):
-          sys.stdout.write(line.replace(mldir, '/'))
+    if audit.new_targets:
+      run_with_stdin(copy_back_cmd, audit.new_targets)
+      if options.edit:
+        # TODO: better to write something like Perl's -T (text) test here
+        tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
+        if tgts:
+          mldir = local_dir + os.sep
+          for line in fileinput.input(tgts, inplace=True):
+            sys.stdout.write(line.replace(mldir, '/'))
+
+  delta = int(time.time() - start_time + 0.5)
+  elapsed = str(datetime.timedelta(seconds=delta))
+  print "Elapsed: %s%s" % (elapsed, bldtime)
 
   return rc
 

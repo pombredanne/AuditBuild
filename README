@@ -14,7 +14,7 @@ with (ideally) no need to change any existing files.
 Since "GNUMakefile" takes precedence over "Makefile", make will
 now open GNUMakefile which simply points to the base of the build
 tree and includes AuditMake.mk. AuditMake.mk in turn runs the
-AuditMake script, passing it the original make command line.
+auditing script, passing it the original make command line.
 The script runs the original make command while implementing the
 auditing logic described.
 

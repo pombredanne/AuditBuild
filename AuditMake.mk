@@ -1,9 +1,9 @@
 Makefile ?= Makefile
 MAKE := $(notdir $(MAKE))
 
-ifneq (,$(filter AM_%,$(MAKEOVERRIDES)))
+ifneq (,$(filter AB_%,$(MAKEOVERRIDES)))
   _AuditMakeFlags := --no-print-directory -f $(Makefile)
-  _AuditOverrides := $(filter-out AM_%,$(MAKEOVERRIDES))
+  _AuditOverrides := $(filter-out AB_%,$(MAKEOVERRIDES))
   ifeq (,$(MAKECMDGOALS))
     .DEFAULT_GOAL = all
   endif
@@ -11,12 +11,12 @@ ifneq (,$(filter AM_%,$(MAKEOVERRIDES)))
     ifeq (clean,$(findstring clean,$(MAKECMDGOALS)))
 	$(MAKE) $(_AuditMakeFlags) $(MAKECMDGOALS)
     else
-	$(strip AuditMake -b $(BaseOfTree) $(if $(AM_DIR),-l $(AM_DIR)) $(AM_FLAGS) -- \
+	$(strip AuditMake -b $(BaseOfTree) $(if $(AB_DIR),-l $(AB_DIR)) $(AB_FLAGS) -- \
 		$(MAKE) $(_AuditMakeFlags) $(_AuditOverrides) $(MAKECMDGOALS))
     endif
   $(MAKEFILE_LIST): ;
   .NOTPARALLEL:
-else    	#AM_%
+else    	#AB_%
   MAKEFILE_LIST :=
   include $(Makefile)
-endif   	#AM_%
+endif   	#AB_%
