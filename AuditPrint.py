@@ -7,7 +7,7 @@ import os
 import sys
 import warnings
 
-from AuditMake import BuildAudit
+from buildaudit import BuildAudit
 
 def main(argv):
   """Read an AuditMake build audit and dump the data in
