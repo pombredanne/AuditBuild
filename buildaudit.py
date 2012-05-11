@@ -50,7 +50,7 @@ class BuildAudit:
     return both
 
   def bldtime(self, key):
-    return self.db[key]['BLDTIME']
+    return self.db[key]['COMMENT']['BLDTIME']
 
   def prebuild(self, indir):
     """Set a unique file reference time and prepare for the build.
@@ -89,7 +89,7 @@ class BuildAudit:
     old_time = get_time_past(0)
     self.reftime = get_time_past(old_time)
 
-  def update(self, key, basedir, seconds):
+  def update(self, key, basedir, seconds, replace):
     prereqs = {}
     intermediates = {}
     terminals = {}
@@ -124,16 +124,19 @@ class BuildAudit:
 
     if not prereqs:
       warnings.warn("Empty prereq set - check for 'noatime' mount")
-    else:
+    elif replace:
       refstr = "%s (%s)" % (str(self.reftime), time.ctime(self.reftime))
       bldtime = str(datetime.timedelta(seconds=int(seconds)))
-      self.db[key] = {'PREREQS': prereqs,
+      self.db[key] = {
+                      'PREREQS': prereqs,
                       'INTERMEDIATES': intermediates,
                       'TERMINALS': terminals,
                       'UNUSED': unused,
-                      'CMDLINE': sys.argv,
-                      'REFTIME': refstr,
-                      'BLDTIME': bldtime}
+                      'COMMENT': {
+                        'CMDLINE': sys.argv,
+                        'REFTIME': refstr,
+                        'BLDTIME': bldtime}
+                     }
       print >> sys.stderr, "updating database for '%s'" % (key)
       with open(self.dbfile, "w") as fp:
         json.dump(self.db, fp, indent=2)

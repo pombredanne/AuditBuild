@@ -27,7 +27,7 @@ def run_with_stdin(cmd, input):
     sys.exit(2)
 
 def main(argv):
-  """Do an audited GNU make build, optionally moved to a local directory.
+  """Do an audited GNU make build, optionally copied to a different directory.
 
   The default build auditing mechanism here is the simplest possible:
   The build is started and the starting time noted. When it finishes,
@@ -59,8 +59,8 @@ def main(argv):
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
   msg += ' -k|--key'
-  msg += ' -l|--local-dir <dir>'
-  msg += ' -r|--retry-fresh'
+  msg += ' -x|--external-dir <dir>'
+  msg += ' -r|--retry'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
@@ -73,16 +73,16 @@ def main(argv):
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
           help='A key uniquely describing what was built')
-  parser.add_option('-l', '--local-dir', type='string',
-          help='Path of local directory')
-  parser.add_option('-r', '--retry-fresh', action='store_true',
+  parser.add_option('-r', '--retry', action='store_true',
           help='On build failure, try a full fresh rebuild')
+  parser.add_option('-x', '--external-dir', type='string',
+          help='Path of external directory')
 
   options, left = parser.parse_args(argv[1:])
-  if options.fresh and options.retry_fresh:
-    parser.error("the --fresh and --retry-fresh options are incompatible")
-  if options.edit and not options.local_dir:
-    parser.error("the --edit option makes no sense without --local-dir")
+  if options.fresh and options.retry:
+    parser.error("the --fresh and --retry options are incompatible")
+  if options.edit and not options.external_dir:
+    parser.error("the --edit option makes no sense without --external-dir")
 
   base_dir = os.path.abspath(options.base_of_tree if options.base_of_tree else '.')
 
@@ -90,22 +90,20 @@ def main(argv):
 
   bldcmd = GMakeCommand(left)
 
-  if options.local_dir and not bldcmd.special_case:
-    local_dir = os.path.abspath(options.local_dir)
-    build_base = os.path.abspath(local_dir + os.sep + base_dir)
-    lwd = os.path.abspath(local_dir + os.sep + cwd)
-    if not os.path.exists(lwd):
-      options.fresh = True
-  else:
-    local_dir = None
-    build_base = base_dir
-    lwd = cwd
-
-  if bldcmd.argv:
-    bldcmd.directory = lwd
-    audit = BuildAudit(dbdir=bldcmd.subdir)
-  else:
+  if not bldcmd.argv:
     main([argv[0], "-h"])
+
+  if options.external_dir and not bldcmd.special_case:
+    external_dir = os.path.abspath(options.external_dir)
+    build_base = os.path.abspath(external_dir + os.sep + base_dir)
+    bwd = os.path.abspath(external_dir + os.sep + cwd)
+  else:
+    external_dir = None
+    build_base = base_dir
+    bwd = cwd
+
+  bldcmd.directory = bwd
+  audit = BuildAudit(dbdir=bldcmd.subdir)
 
   if bldcmd.dry_run:
     sys.exit(0)
@@ -115,18 +113,21 @@ def main(argv):
 
   key = options.key if options.key else bldcmd.tgtkey
 
-  if options.clean:
-    for tgt in audit.old_targets(key):
-      try:
-        os.remove(os.path.join(build_base, tgt))
-      except OSError:
-        pass
+  if audit.has(key):
+    if options.clean:
+      for tgt in audit.old_targets(key):
+        try:
+          os.remove(os.path.join(build_base, tgt))
+        except OSError:
+          pass
+  else:
+    options.fresh = True
 
-  if local_dir:
+  if external_dir:
     if options.fresh:
       if os.path.exists(build_base):
         shutil.rmtree(build_base)
-      os.makedirs(lwd)
+      os.makedirs(bwd)
       svnstat = ['svn', 'status', '--no-ignore']
       verbose(svnstat)
       svnstat = subprocess.Popen(svnstat, stdout=subprocess.PIPE, cwd=base_dir)
@@ -157,19 +158,13 @@ def main(argv):
         build_base])
     run_with_stdin(copy_out_cmd, feed_to_rsync)
 
-    os.putenv('AB_DIR', local_dir)
+    os.putenv('AB_DIR', external_dir)
 
-  if options.fresh:
-    audit.prebuild(build_base)
+  audit.prebuild(build_base)
 
-  rc = bldcmd.execute_in(lwd)
+  rc = bldcmd.execute_in(bwd)
 
-  bldtime = ''
-  if rc == 0:
-    if options.fresh:
-      audit.update(key, build_base, bldcmd.end_time - bldcmd.start_time)
-      bldtime = " (build time: %s)" % (audit.bldtime(key))
-  elif options.retry_fresh and local_dir:
+  if rc != 0 and options.retry and external_dir:
     nargv = []
     for arg in argv:
       if not re.match(r'(-r|--retry)', arg):
@@ -179,7 +174,11 @@ def main(argv):
     rc = subprocess.call(nargv)
     sys.exit(rc)
 
-  if local_dir:
+  secs = bldcmd.end_time - bldcmd.start_time
+  replace = options.fresh and rc == 0
+  audit.update(key, build_base, secs, replace)
+
+  if external_dir:
     copy_back_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
     if audit.new_targets:
       run_with_stdin(copy_back_cmd, audit.new_targets)
@@ -187,13 +186,13 @@ def main(argv):
         # TODO: better to write something like Perl's -T (text) test here
         tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
         if tgts:
-          mldir = local_dir + os.sep
+          mldir = external_dir + os.sep
           for line in fileinput.input(tgts, inplace=True):
             sys.stdout.write(line.replace(mldir, '/'))
 
   delta = int(time.time() - start_time + 0.5)
   elapsed = str(datetime.timedelta(seconds=delta))
-  print "Elapsed: %s%s" % (elapsed, bldtime)
+  print "Elapsed: %s (build time: %s)" % (elapsed, audit.bldtime(key))
 
   return rc
 
