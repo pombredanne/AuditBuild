@@ -60,7 +60,6 @@ def main(argv):
   msg += ' -f|--fresh'
   msg += ' -k|--key'
   msg += ' -x|--external-dir <dir>'
-  msg += ' -r|--retry'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
@@ -73,14 +72,10 @@ def main(argv):
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
           help='A key uniquely describing what was built')
-  parser.add_option('-r', '--retry', action='store_true',
-          help='On build failure, try a full fresh rebuild')
   parser.add_option('-x', '--external-dir', type='string',
           help='Path of external directory')
 
   options, left = parser.parse_args(argv[1:])
-  if options.fresh and options.retry:
-    parser.error("the --fresh and --retry options are incompatible")
   if options.edit and not options.external_dir:
     parser.error("the --edit option makes no sense without --external-dir")
 
@@ -164,11 +159,8 @@ def main(argv):
 
   rc = bldcmd.execute_in(bwd)
 
-  if rc != 0 and options.retry and external_dir:
-    nargv = []
-    for arg in argv:
-      if not re.match(r'(-r|--retry)', arg):
-        nargv.append(arg)
+  if rc != 0 and external_dir and not options.fresh:
+    nargv = argv[:]
     nargv.insert(1, '--fresh')
     verbose(nargv)
     rc = subprocess.call(nargv)
