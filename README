@@ -40,3 +40,9 @@ area to a local filesystem, for speed reasons, but that is not
 required. The requirement is that the build filesystem update
 access times, i.e.  not be mounted with the "noatime" option. NFS
 mounts often employ "noatime" as an optimization.
+
+NOTE
+
+There are a few site-specific assumptions here, e.g. a couple
+of places where subversion is assumed, but most of it is quite
+generic and the assumptions easily corrected.

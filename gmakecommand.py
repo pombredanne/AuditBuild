@@ -1,3 +1,5 @@
+import atexit
+import datetime
 import optparse
 import os
 import re
@@ -97,11 +99,19 @@ class GMakeCommand(object):
     else:
       self.tgtkey += 'all'  #just by convention
 
+  def printstats(self):
+    b = int(self.end_time - self.start_time + 0.5)
+    bldstr = str(datetime.timedelta(seconds=b))
+    e = int(time.time() - self.start_time + 0.5)
+    elapsed = str(datetime.timedelta(seconds=e))
+    print "Elapsed: %s (build time: %s)" % (elapsed, bldstr)
+
   def execute_in(self, dir):
     print >> sys.stderr, '+', ' '.join(self.argv)
     self.start_time = time.time()
     rc = subprocess.call(self.argv, cwd=dir, stdin=open(os.devnull))
     self.end_time = time.time()
+    atexit.register(GMakeCommand.printstats, self)
     return rc
 
 # vim: ts=8:sw=2:tw=120:et:

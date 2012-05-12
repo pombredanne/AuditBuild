@@ -5,17 +5,14 @@ import fileinput
 import optparse
 import os
 import re
-import shutil
+import shared
 import subprocess
 import sys
 import time
 
+from auditutils import recreate_dir, verbose
 from buildaudit import BuildAudit
 from gmakecommand import GMakeCommand
-
-def verbose(cmd):
-  """Print verbosity for executed subcommands."""
-  print >> sys.stderr, '+', ' '.join(cmd)
 
 def run_with_stdin(cmd, input):
   verbose(cmd)
@@ -51,15 +48,17 @@ def main(argv):
   global prog
   prog = os.path.basename(argv[0])
 
-  start_time = time.time()
-
   msg = '%prog'
-  msg += ' -b|--base-of-tree <dir>'
+  msg += ' -b|--base-of-tree=DIR'
   msg += ' -c|--clean'
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
-  msg += ' -k|--key'
-  msg += ' -x|--external-dir <dir>'
+  msg += ' -k|--key=KEY'
+  msg += ' -p|--prebuild=COMMAND'
+  msg += ' -q|--quiet'
+  msg += ' -r|--retry-in-place'
+  msg += ' -X|--execute-only'
+  msg += ' -x|--external-dir=DIR'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
@@ -72,14 +71,25 @@ def main(argv):
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
           help='A key uniquely describing what was built')
+  parser.add_option('-p', '--prebuild', type='string',
+          default='test ! -d src/include || REUSE_VERSION=1 make -C src/include',
+          help='A regexp matching files to be treated specially')
+  parser.add_option('-q', '--quiet', action='store_true',
+          help='Suppress common verbosity')
+  parser.add_option('-r', '--retry-in-place', action='store_true',
+          help='Retry failed external builds in the current directory')
+  parser.add_option('-X', '--execute-only', action='store_true',
+          help='Skip the auditing and just exec the build command')
   parser.add_option('-x', '--external-dir', type='string',
           help='Path of external directory')
 
-  options, left = parser.parse_args(argv[1:])
-  if options.edit and not options.external_dir:
+  opts, left = parser.parse_args(argv[1:])
+  if opts.edit and not opts.external_dir:
     parser.error("the --edit option makes no sense without --external-dir")
 
-  base_dir = os.path.abspath(options.base_of_tree if options.base_of_tree else '.')
+  shared.verbosity = 0 if opts.quiet else 1
+
+  base_dir = os.path.abspath(opts.base_of_tree if opts.base_of_tree else '.')
 
   cwd = os.getcwd()
 
@@ -88,8 +98,8 @@ def main(argv):
   if not bldcmd.argv:
     main([argv[0], "-h"])
 
-  if options.external_dir and not bldcmd.special_case:
-    external_dir = os.path.abspath(options.external_dir)
+  if opts.external_dir:
+    external_dir = os.path.abspath(opts.external_dir)
     build_base = os.path.abspath(external_dir + os.sep + base_dir)
     bwd = os.path.abspath(external_dir + os.sep + cwd)
   else:
@@ -102,27 +112,25 @@ def main(argv):
 
   if bldcmd.dry_run:
     sys.exit(0)
-  elif bldcmd.special_case:
-    rc = bldcmd.execute_in(cwd)
+  elif bldcmd.special_case or opts.execute_only:
+    rc = bldcmd.execute_in(bwd)
     sys.exit(rc)
 
-  key = options.key if options.key else bldcmd.tgtkey
+  key = opts.key if opts.key else bldcmd.tgtkey
 
   if audit.has(key):
-    if options.clean:
+    if opts.clean:
       for tgt in audit.old_targets(key):
         try:
           os.remove(os.path.join(build_base, tgt))
         except OSError:
           pass
   else:
-    options.fresh = True
+    opts.fresh = True
 
   if external_dir:
-    if options.fresh:
-      if os.path.exists(build_base):
-        shutil.rmtree(build_base)
-      os.makedirs(bwd)
+    if opts.fresh:
+      recreate_dir(bwd)
       svnstat = ['svn', 'status', '--no-ignore']
       verbose(svnstat)
       svnstat = subprocess.Popen(svnstat, stdout=subprocess.PIPE, cwd=base_dir)
@@ -133,8 +141,6 @@ def main(argv):
       for line in privates.splitlines():
         rpath = re.sub(r'^[I?]\s+', '', line)
         if rpath == line:
-          continue
-        if re.search(r'vers\w*\.h$', rpath):
           continue
         if os.path.isdir(os.path.join(base_dir, rpath)):
           rpath += os.sep
@@ -155,36 +161,43 @@ def main(argv):
 
     os.putenv('AB_DIR', external_dir)
 
-  audit.prebuild(build_base)
+  audit.setup(build_base)
+
+  if opts.prebuild:
+    print >> sys.stderr, '+', opts.prebuild
+    rc = subprocess.call(opts.prebuild, shell=True, cwd=build_base, stdin=open(os.devnull))
+    if (rc != 0):
+      sys.exit(2)
 
   rc = bldcmd.execute_in(bwd)
 
-  if rc != 0 and external_dir and not options.fresh:
-    nargv = argv[:]
-    nargv.insert(1, '--fresh')
-    verbose(nargv)
-    rc = subprocess.call(nargv)
-    sys.exit(rc)
+  if rc != 0 and external_dir:
+    if opts.retry_in_place:
+      rc = bldcmd.execute_in(cwd)
+      sys.exit(rc)
+    elif not opts.fresh:
+      nargv = argv[:]
+      nargv.insert(1, '--fresh')
+      verbose(nargv)
+      rc = subprocess.call(nargv)
+      sys.exit(rc)
 
-  secs = bldcmd.end_time - bldcmd.start_time
-  replace = options.fresh and rc == 0
-  audit.update(key, build_base, secs, replace)
+  seconds = bldcmd.end_time - bldcmd.start_time
+  bld_time = str(datetime.timedelta(seconds=int(seconds)))
+  replace = opts.fresh and rc == 0
+  audit.update(key, build_base, bld_time, replace)
 
   if external_dir:
     copy_back_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
     if audit.new_targets:
       run_with_stdin(copy_back_cmd, audit.new_targets)
-      if options.edit:
+      if opts.edit:
         # TODO: better to write something like Perl's -T (text) test here
         tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
         if tgts:
           mldir = external_dir + os.sep
           for line in fileinput.input(tgts, inplace=True):
             sys.stdout.write(line.replace(mldir, '/'))
-
-  delta = int(time.time() - start_time + 0.5)
-  elapsed = str(datetime.timedelta(seconds=delta))
-  print "Elapsed: %s (build time: %s)" % (elapsed, audit.bldtime(key))
 
   return rc
 

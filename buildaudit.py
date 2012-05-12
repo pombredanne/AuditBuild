@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -17,12 +18,17 @@ class BuildAudit:
   these file sets.
 
   """
-  def __init__(self, dbdir='.', dbname='BuildAudit.json'):
-    self.dbfile = os.path.join(dbdir, dbname)
+  def __init__(self, dbname='BuildAudit.json', dbdir=None):
+    if dbdir:
+      self.dbfile = os.path.join(dbdir, dbname)
+    else:
+      self.dbfile = dbname
+
     try:
       self.db = json.load(open(self.dbfile))
     except IOError:
       self.db = {}
+
     self.new_targets = {}
 
   def has(self, key):
@@ -52,7 +58,7 @@ class BuildAudit:
   def bldtime(self, key):
     return self.db[key]['COMMENT']['BLDTIME']
 
-  def prebuild(self, indir):
+  def setup(self, indir):
     """Set a unique file reference time and prepare for the build.
 
     Different filesystems have different granularities for time
@@ -89,7 +95,7 @@ class BuildAudit:
     old_time = get_time_past(0)
     self.reftime = get_time_past(old_time)
 
-  def update(self, key, basedir, seconds, replace):
+  def update(self, key, basedir, bldtime, replace):
     prereqs = {}
     intermediates = {}
     terminals = {}
@@ -126,7 +132,6 @@ class BuildAudit:
       warnings.warn("Empty prereq set - check for 'noatime' mount")
     elif replace:
       refstr = "%s (%s)" % (str(self.reftime), time.ctime(self.reftime))
-      bldtime = str(datetime.timedelta(seconds=int(seconds)))
       self.db[key] = {
                       'PREREQS': prereqs,
                       'INTERMEDIATES': intermediates,
@@ -135,7 +140,8 @@ class BuildAudit:
                       'COMMENT': {
                         'CMDLINE': sys.argv,
                         'REFTIME': refstr,
-                        'BLDTIME': bldtime}
+                        'BLDTIME': bldtime,
+                        }
                      }
       print >> sys.stderr, "updating database for '%s'" % (key)
       with open(self.dbfile, "w") as fp:
