@@ -49,16 +49,16 @@ def main(argv):
   prog = os.path.basename(argv[0])
 
   msg = '%prog'
-  msg += ' -b|--base-of-tree=DIR'
+  msg += ' -b|--base-of-tree <dir>'
   msg += ' -c|--clean'
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
-  msg += ' -k|--key=KEY'
-  msg += ' -p|--prebuild=COMMAND'
-  msg += ' -q|--quiet'
+  msg += ' -k|--key <key>'
+  msg += ' -p|--prebuild <command>'
   msg += ' -r|--retry-in-place'
   msg += ' -X|--execute-only'
-  msg += ' -x|--external-dir=DIR'
+  msg += ' -x|--external-dir <dir>'
+  msg += ' -v|--verbosity <n>'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
@@ -74,20 +74,20 @@ def main(argv):
   parser.add_option('-p', '--prebuild', type='string',
           default='test ! -d src/include || REUSE_VERSION=1 make -C src/include',
           help='A regexp matching files to be treated specially')
-  parser.add_option('-q', '--quiet', action='store_true',
-          help='Suppress common verbosity')
   parser.add_option('-r', '--retry-in-place', action='store_true',
           help='Retry failed external builds in the current directory')
   parser.add_option('-X', '--execute-only', action='store_true',
           help='Skip the auditing and just exec the build command')
   parser.add_option('-x', '--external-dir', type='string',
           help='Path of external directory')
+  parser.add_option('-v', '--verbosity', type='int',
+          help='Change the amount of verbosity')
 
   opts, left = parser.parse_args(argv[1:])
   if opts.edit and not opts.external_dir:
     parser.error("the --edit option makes no sense without --external-dir")
 
-  shared.verbosity = 0 if opts.quiet else 1
+  shared.verbosity = opts.verbosity if opts.verbosity is not None else 1
 
   base_dir = os.path.abspath(opts.base_of_tree if opts.base_of_tree else '.')
 

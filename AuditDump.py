@@ -37,11 +37,11 @@ def main(argv):
   msg += ' -k|--keys <key,key,...>'
   msg += ' -l|--list-keys'
   msg += ' -p|--print-prerequisites'
-  msg += ' -q|--quiet'
   msg += ' -s|--print-sparsefile <comment>'
   msg += ' -T|--print-terminal-targets'
   msg += ' -t|--print-targets'
   msg += ' -u|--print-unused'
+  msg += ' -v|--verbosity <n>'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-a', '--print-all', action='store_true',
           help='Print all involved files for key(s)')
@@ -62,8 +62,6 @@ def main(argv):
           help='Comma-separated list of keys')
   parser.add_option('-l', '--list-keys', action='store_true',
           help='List all known keys in the given database')
-  parser.add_option('-q', '--quiet', action='store_true',
-          help='Suppress common verbosity')
   parser.add_option('-p', '--print-prerequisites', action='store_true',
           help='Print prerequisites for the given key(s)')
   parser.add_option('-s', '--print-sparsefile', type='string',
@@ -74,12 +72,14 @@ def main(argv):
           help='Print targets for the given key(s)')
   parser.add_option('-u', '--print-unused', action='store_true',
           help='Print files present but unused for key(s)')
+  parser.add_option('-v', '--verbosity', type='int',
+          help='Change the amount of verbosity')
   opts, left = parser.parse_args(argv[1:])
 
   if not [o for o in vars(opts) if opts.__dict__[o]]:
     main([argv[0], "-h"])
 
-  shared.verbosity = 0 if opts.quiet else 1
+  shared.verbosity = opts.verbosity if opts.verbosity is not None else 1
 
   rc = 0
 
