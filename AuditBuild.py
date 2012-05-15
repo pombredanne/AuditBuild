@@ -6,22 +6,14 @@ import optparse
 import os
 import re
 import shared
+import shutil
 import subprocess
 import sys
 import time
 
-from auditutils import recreate_dir, verbose
 from buildaudit import BuildAudit
 from gmakecommand import GMakeCommand
-
-def run_with_stdin(cmd, input):
-  verbose(cmd)
-  subproc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-  for line in input:
-    print >> subproc.stdin, line
-  subproc.stdin.close()
-  if subproc.wait():
-    sys.exit(2)
+from auditutils import run_with_stdin, svn_export_dirs, svn_get_url, recreate_dir, verbose, svn_full_extract
 
 def main(argv):
   """Do an audited GNU make build, optionally copied to a different directory.
@@ -51,10 +43,13 @@ def main(argv):
   msg = '%prog'
   msg += ' -b|--base-of-tree <dir>'
   msg += ' -c|--clean'
+  msg += ' -D|--dbname <file>'
+  msg += ' -E|--extract-dirs-with-fallback <bom>'
   msg += ' -e|--edit'
   msg += ' -f|--fresh'
   msg += ' -k|--key <key>'
   msg += ' -p|--prebuild <command>'
+  msg += ' -R|--remove-external-tree'
   msg += ' -r|--retry-in-place'
   msg += ' -X|--execute-only'
   msg += ' -x|--external-dir <dir>'
@@ -65,8 +60,12 @@ def main(argv):
           help='Path to root of source tree')
   parser.add_option('-c', '--clean', action='store_true',
           help='Force a clean ahead of the build')
+  parser.add_option('-D', '--dbname', type='string',
+          help='Path to a database file')
+  parser.add_option('-E', '--extract-dirs-with-fallback', type='string',
+          help='Pre-populate the build tree from DB or BOM')
   parser.add_option('-e', '--edit', action='store_true',
-          help='Fix generated text files to use ${AB_DIR}')
+          help='Fix up generated text files: s/<external-dir>//')
   parser.add_option('-f', '--fresh', action='store_true',
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
@@ -74,6 +73,8 @@ def main(argv):
   parser.add_option('-p', '--prebuild', type='string',
           default='test ! -d src/include || REUSE_VERSION=1 make -C src/include',
           help='A regexp matching files to be treated specially')
+  parser.add_option('-R', '--remove-external-tree', action='store_true',
+          help='Remove the external build tree before exiting')
   parser.add_option('-r', '--retry-in-place', action='store_true',
           help='Retry failed external builds in the current directory')
   parser.add_option('-X', '--execute-only', action='store_true',
@@ -86,17 +87,14 @@ def main(argv):
   opts, left = parser.parse_args(argv[1:])
   if opts.edit and not opts.external_dir:
     parser.error("the --edit option makes no sense without --external-dir")
+  if not left:
+    main([argv[0], "-h"])
 
   shared.verbosity = opts.verbosity if opts.verbosity is not None else 1
 
   base_dir = os.path.abspath(opts.base_of_tree if opts.base_of_tree else '.')
 
   cwd = os.getcwd()
-
-  bldcmd = GMakeCommand(left)
-
-  if not bldcmd.argv:
-    main([argv[0], "-h"])
 
   if opts.external_dir:
     external_dir = os.path.abspath(opts.external_dir)
@@ -107,8 +105,25 @@ def main(argv):
     build_base = base_dir
     bwd = cwd
 
+  bldcmd = GMakeCommand(left)
   bldcmd.directory = bwd
-  audit = BuildAudit(dbdir=bldcmd.subdir)
+
+  if opts.dbname:
+    audit = BuildAudit(opts.dbname)
+  else:
+    audit = BuildAudit(dbdir=bldcmd.subdir)
+
+  key = opts.key if opts.key else bldcmd.tgtkey
+
+  if opts.extract_dirs_with_fallback:
+    base_url = audit.baseurl(key)
+    rc = svn_export_dirs(base_url, base_dir, audit.old_prereqs([key]))
+    if rc != 0:
+      rc = svn_full_extract(opts.extract_dirs_with_fallback, base_dir)
+      if rc != 0:
+        sys.exit(2)
+  else:
+    base_url = svn_get_url(base_dir)
 
   if bldcmd.dry_run:
     sys.exit(0)
@@ -116,11 +131,9 @@ def main(argv):
     rc = bldcmd.execute_in(bwd)
     sys.exit(rc)
 
-  key = opts.key if opts.key else bldcmd.tgtkey
-
   if audit.has(key):
     if opts.clean:
-      for tgt in audit.old_targets(key):
+      for tgt in audit.old_targets([key]):
         try:
           os.remove(os.path.join(build_base, tgt))
         except OSError:
@@ -133,7 +146,7 @@ def main(argv):
       recreate_dir(bwd)
       svnstat = ['svn', 'status', '--no-ignore']
       verbose(svnstat)
-      svnstat = subprocess.Popen(svnstat, stdout=subprocess.PIPE, cwd=base_dir)
+      svnstat = subprocess.Popen(svnstat, cwd=base_dir, stdout=subprocess.PIPE, stderr=open(os.devnull))
       privates = svnstat.communicate()[0]
       if svnstat.returncode != 0:
         sys.exit(2)
@@ -147,7 +160,9 @@ def main(argv):
         feed_to_rsync.append(rpath)
       copy_out_cmd = ['rsync', '-a', '--exclude=[.]svn*', '--exclude-from=-']
     else:
-      feed_to_rsync = audit.old_prereqs(key)
+      if not os.path.exists(build_base):
+        os.makedirs(build_base)
+      feed_to_rsync = audit.old_prereqs([key])
       copy_out_cmd = ['rsync', '-a', '--files-from=-']
 
     copy_out_cmd.extend([
@@ -158,8 +173,6 @@ def main(argv):
         base_dir + os.sep,
         build_base])
     run_with_stdin(copy_out_cmd, feed_to_rsync)
-
-    os.putenv('AB_DIR', external_dir)
 
   audit.setup(build_base)
 
@@ -185,12 +198,12 @@ def main(argv):
   seconds = bldcmd.end_time - bldcmd.start_time
   bld_time = str(datetime.timedelta(seconds=int(seconds)))
   replace = opts.fresh and rc == 0
-  audit.update(key, build_base, bld_time, replace)
+  audit.update(key, build_base, bld_time, base_url, replace)
 
   if external_dir:
-    copy_back_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
     if audit.new_targets:
-      run_with_stdin(copy_back_cmd, audit.new_targets)
+      copy_in_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
+      run_with_stdin(copy_in_cmd, audit.new_targets)
       if opts.edit:
         # TODO: better to write something like Perl's -T (text) test here
         tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
@@ -198,6 +211,9 @@ def main(argv):
           mldir = external_dir + os.sep
           for line in fileinput.input(tgts, inplace=True):
             sys.stdout.write(line.replace(mldir, '/'))
+    if opts.remove_external_tree:
+      verbose("Removing %s/..." % (build_base))
+      shutil.rmtree(build_base)
 
   return rc
 

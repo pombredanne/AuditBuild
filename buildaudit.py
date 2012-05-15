@@ -39,26 +39,36 @@ class BuildAudit:
   def all_keys(self):
     return sorted(self.db.keys())
 
-  def old_prereqs(self, key):
-    return self.db[key]['PREREQS'] if key in self.db else {}
+  def old_data(self, keys, category):
+    results = {}
+    for key in keys:
+      if key in self.db:
+        results.update(self.db[key][category])
+    return results
 
-  def old_intermediates(self, key):
-    return self.db[key]['INTERMEDIATES'] if key in self.db else {}
+  def old_prereqs(self, keys):
+    return self.old_data(keys, 'PREREQS')
 
-  def old_terminals(self, key):
-    return self.db[key]['TERMINALS'] if key in self.db else {}
+  def old_intermediates(self, keys):
+    return self.old_data(keys, 'INTERMEDIATES')
 
-  def old_unused(self, key):
-    return self.db[key]['UNUSED'] if key in self.db else {}
+  def old_terminals(self, keys):
+    return self.old_data(keys, 'TERMINALS')
 
-  def old_targets(self, key):
+  def old_unused(self, keys):
+    return self.old_data(keys, 'UNUSED')
+
+  def old_targets(self, keys):
     both = {}
-    both.update(self.old_intermediates(key))
-    both.update(self.old_terminals(key))
+    both.update(self.old_intermediates(keys))
+    both.update(self.old_terminals(keys))
     return both
 
   def bldtime(self, key):
     return self.db[key]['COMMENT']['BLDTIME']
+
+  def baseurl(self, key):
+    return self.db[key]['COMMENT']['BASEURL']
 
   def setup(self, indir):
     """Set a unique file reference time and prepare for the build.
@@ -97,7 +107,7 @@ class BuildAudit:
     old_time = get_time_past(0)
     self.reftime = get_time_past(old_time)
 
-  def update(self, key, basedir, bldtime, replace):
+  def update(self, key, basedir, bldtime, baseurl, replace):
     prereqs = {}
     intermediates = {}
     terminals = {}
@@ -140,9 +150,10 @@ class BuildAudit:
                       'TERMINALS': terminals,
                       'UNUSED': unused,
                       'COMMENT': {
+                        'BLDTIME': bldtime,
                         'CMDLINE': sys.argv,
                         'REFTIME': refstr,
-                        'BLDTIME': bldtime,
+                        'BASEURL': baseurl,
                         }
                      }
       verbose("Updating database for '%s'" % (key))
