@@ -145,7 +145,7 @@ def main(argv):
         if os.path.isdir(os.path.join(base_dir, rpath)):
           rpath += os.sep
         feed_to_rsync.append(rpath)
-      copy_out_cmd = ['rsync', '-aC', '--include=core*', '--exclude-from=-']
+      copy_out_cmd = ['rsync', '-a', '--exclude=[.]svn*', '--exclude-from=-']
     else:
       feed_to_rsync = audit.old_prereqs(key)
       copy_out_cmd = ['rsync', '-a', '--files-from=-']
@@ -164,7 +164,7 @@ def main(argv):
   audit.setup(build_base)
 
   if opts.prebuild:
-    print >> sys.stderr, '+', opts.prebuild
+    verbose([opts.prebuild])
     rc = subprocess.call(opts.prebuild, shell=True, cwd=build_base, stdin=open(os.devnull))
     if (rc != 0):
       sys.exit(2)

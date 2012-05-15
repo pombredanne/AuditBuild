@@ -7,6 +7,8 @@ import tempfile
 import time
 import warnings
 
+from auditutils import verbose
+
 class BuildAudit:
   """Class to manage and persist the audit of a build into prereqs and targets.
 
@@ -77,7 +79,7 @@ class BuildAudit:
     self.pre_existing = {}
     for parent, dir_names, file_names in os.walk(indir):
       # Assume hidden dirs contain stuff we don't care about
-      dir_names[:] = (d for d in dir_names if not d.startswith('.'))
+      dir_names[:] = (nm for nm in dir_names if not nm.startswith('.'))
       for file_name in file_names:
         rpath = os.path.relpath(os.path.join(parent, file_name), indir)
         self.pre_existing[rpath] = True
@@ -143,7 +145,7 @@ class BuildAudit:
                         'BLDTIME': bldtime,
                         }
                      }
-      print >> sys.stderr, "updating database for '%s'" % (key)
+      verbose("Updating database for '%s'" % (key))
       with open(self.dbfile, "w") as fp:
         json.dump(self.db, fp, indent=2)
         fp.write('\n');  # json does not add trailing newline

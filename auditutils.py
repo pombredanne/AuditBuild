@@ -3,10 +3,13 @@ import os
 import shutil
 import sys
 
-def verbose(cmd):
-  """Print verbosity for executed subcommands."""
+def verbose(message):
+  """Print optional verbosity."""
   if shared.verbosity > 0:
-    print >> sys.stderr, '+', ' '.join(cmd)
+    if type(message) == list:
+      print >> sys.stderr, '+', ' '.join(message)
+    else:
+      print >> sys.stderr, message
 
 def recreate_dir(dir):
   if os.path.exists(dir):

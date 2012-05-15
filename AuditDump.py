@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-import shared
 import optparse
 import os
 import re
@@ -8,14 +7,16 @@ import subprocess
 import sys
 import warnings
 
+import shared
 from auditutils import recreate_dir, verbose
 from buildaudit import BuildAudit
 
 def dirnames(files):
   dirs = {}
-  for f in files:
-    d = os.path.dirname(f)
-    dirs[d] = True
+  for fn in files:
+    dir = os.path.dirname(fn)
+    if len(dir) > 0:
+      dirs[dir] = True
   return dirs
 
 def main(argv):
@@ -93,6 +94,8 @@ def main(argv):
   else:
     keylist = audit.all_keys()
     print >> sys.stderr, "Using keys: %s" % (keylist)
+    if not keylist:
+      sys.exit(2)
 
   if opts.list_keys:
     for k in keylist:
@@ -134,29 +137,29 @@ def main(argv):
     print '#', opts.print_sparsefile
     print '['
     print "   (%-*s  'files')," % (60, "'./',")
-    for d in sorted(dirnames(results)):
-      path = "'" + d + "/',"
+    for dir in sorted(dirnames(results)):
+      path = "'" + dir + "/',"
       print "   (%-*s  'files')," % (60, path)
     print ']'
   if opts.svn_export_dirs:
     base = recreate_dir(opts.svn_export_dirs)
-    for d in sorted(results):
-      to = os.path.join(base, d)
+    for dir in sorted(results):
+      to = os.path.join(base, dir)
       parent = os.path.dirname(to)
       if not os.path.exists(parent):
         os.makedirs(parent)
-      cmd = ['svn', 'export', '--quiet', '--depth', 'files', d, to]
+      cmd = ['svn', 'export', '--quiet', '--depth', 'files', dir, to]
       verbose(cmd)
       if subprocess.call(cmd) != 0:
         rc = 2
   elif opts.svn_export:
     base = recreate_dir(opts.svn_export)
-    for d in sorted(dirnames(results)):
-      dir = os.path.join(base, d)
+    for dirs in sorted(dirnames(results)):
+      dir = os.path.join(base, dirs)
       if not os.path.exists(dir):
         os.makedirs(dir)
-    for f in results:
-      cmd = ['svn', 'export', '--quiet', f, os.path.join(base, f)]
+    for fn in results:
+      cmd = ['svn', 'export', '--quiet', fn, os.path.join(base, fn)]
       verbose(cmd)
       if subprocess.call(cmd) != 0:
         rc = 2

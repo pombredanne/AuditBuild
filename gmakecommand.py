@@ -3,9 +3,12 @@ import datetime
 import optparse
 import os
 import re
-import subprocess
 import sys
+import subprocess
 import time
+
+import shared
+from auditutils import recreate_dir, verbose
 
 class GMakeCommand(object):
   """Parse a GNU make command line to see which args affect build output.
@@ -100,14 +103,15 @@ class GMakeCommand(object):
       self.tgtkey += 'all'  #just by convention
 
   def printstats(self):
-    b = int(self.end_time - self.start_time + 0.5)
-    bldstr = str(datetime.timedelta(seconds=b))
-    e = int(time.time() - self.start_time + 0.5)
-    elapsed = str(datetime.timedelta(seconds=e))
-    print "Elapsed: %s (build time: %s)" % (elapsed, bldstr)
+    if shared.verbosity > 0:
+      b = int(self.end_time - self.start_time + 0.5)
+      bldstr = str(datetime.timedelta(seconds=b))
+      e = int(time.time() - self.start_time + 0.5)
+      elapsed = str(datetime.timedelta(seconds=e))
+      print >> sys.stderr, "Elapsed: %s (build time: %s)" % (elapsed, bldstr)
 
   def execute_in(self, dir):
-    print >> sys.stderr, '+', ' '.join(self.argv)
+    verbose(self.argv)
     self.start_time = time.time()
     rc = subprocess.call(self.argv, cwd=dir, stdin=open(os.devnull))
     self.end_time = time.time()
