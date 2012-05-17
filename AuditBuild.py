@@ -51,9 +51,10 @@ def main(argv):
   msg += ' -p|--prebuild <command>'
   msg += ' -R|--remove-external-tree'
   msg += ' -r|--retry-in-place'
+  msg += ' -U|--base-url <url>'
+  msg += ' -v|--verbosity <n>'
   msg += ' -X|--execute-only'
   msg += ' -x|--external-dir <dir>'
-  msg += ' -v|--verbosity <n>'
   msg += ' -- gmake <gmake-args>...'
   parser = optparse.OptionParser(usage=msg)
   parser.add_option('-b', '--base-of-tree', type='string',
@@ -70,19 +71,21 @@ def main(argv):
           help='Regenerate data for current build from scratch')
   parser.add_option('-k', '--key', type='string',
           help='A key uniquely describing what was built')
-  parser.add_option('-p', '--prebuild', type='string',
-          default='test ! -d src/include || REUSE_VERSION=1 make -C src/include',
-          help='A regexp matching files to be treated specially')
+  parser.add_option('-p', '--prebuild', type='string', action='append',
+          default=['test ! -d src/include || REUSE_VERSION=1 make -C src/include'],
+          help='Setup command(s) to be run prior to the build proper')
   parser.add_option('-R', '--remove-external-tree', action='store_true',
           help='Remove the external build tree before exiting')
   parser.add_option('-r', '--retry-in-place', action='store_true',
           help='Retry failed external builds in the current directory')
+  parser.add_option('-U', '--base-url', type='string',
+          help='The svn URL from which to get files')
+  parser.add_option('-v', '--verbosity', type='int',
+          help='Change the amount of verbosity')
   parser.add_option('-X', '--execute-only', action='store_true',
           help='Skip the auditing and just exec the build command')
   parser.add_option('-x', '--external-dir', type='string',
           help='Path of external directory')
-  parser.add_option('-v', '--verbosity', type='int',
-          help='Change the amount of verbosity')
 
   opts, left = parser.parse_args(argv[1:])
   if opts.edit and not opts.external_dir:
@@ -115,20 +118,22 @@ def main(argv):
 
   key = opts.key if opts.key else bldcmd.tgtkey
 
+  base_url = opts.base_url if opts.base_url else audit.baseurl(key)
+  if not base_url:
+    base_url = svn_get_url(base_dir)
+
   if opts.extract_dirs_with_fallback:
-    base_url = audit.baseurl(key)
     rc = svn_export_dirs(base_url, base_dir, audit.old_prereqs([key]))
     if rc != 0:
-      rc = svn_full_extract(opts.extract_dirs_with_fallback, base_dir)
+      exfile = os.path.join(base_url, opts.extract_dirs_with_fallback)
+      rc = svn_full_extract(exfile, base_dir)
       if rc != 0:
         sys.exit(2)
-  else:
-    base_url = svn_get_url(base_dir)
 
   if bldcmd.dry_run:
     sys.exit(0)
   elif bldcmd.special_case or opts.execute_only:
-    rc = bldcmd.execute_in(bwd)
+    rc = bldcmd.execute_in(cwd)
     sys.exit(rc)
 
   if audit.has(key):
@@ -142,23 +147,26 @@ def main(argv):
     opts.fresh = True
 
   if external_dir:
+    copy_out_cmd = ['rsync', '-a']
     if opts.fresh:
+      copy_out_cmd.append('--exclude=[.]svn*')
       recreate_dir(bwd)
-      svnstat = ['svn', 'status', '--no-ignore']
-      verbose(svnstat)
-      svnstat = subprocess.Popen(svnstat, cwd=base_dir, stdout=subprocess.PIPE, stderr=open(os.devnull))
-      privates = svnstat.communicate()[0]
-      if svnstat.returncode != 0:
-        sys.exit(2)
       feed_to_rsync = []
-      for line in privates.splitlines():
-        rpath = re.sub(r'^[I?]\s+', '', line)
-        if rpath == line:
-          continue
-        if os.path.isdir(os.path.join(base_dir, rpath)):
-          rpath += os.sep
-        feed_to_rsync.append(rpath)
-      copy_out_cmd = ['rsync', '-a', '--exclude=[.]svn*', '--exclude-from=-']
+      if False:
+        svnstat = ['svn', 'status', '--no-ignore']
+        verbose(svnstat)
+        svnstat = subprocess.Popen(svnstat, cwd=base_dir, stdout=subprocess.PIPE, stderr=open(os.devnull))
+        privates = svnstat.communicate()[0]
+        if svnstat.returncode != 0:
+          sys.exit(2)
+        for line in privates.splitlines():
+          rpath = re.sub(r'^[I?]\s+', '', line)
+          if rpath == line:
+            continue
+          if os.path.isdir(os.path.join(base_dir, rpath)):
+            rpath += os.sep
+          feed_to_rsync.append(rpath)
+        copy_out_cmd.append('--exclude-from=-')
     else:
       if not os.path.exists(build_base):
         os.makedirs(build_base)
@@ -177,10 +185,11 @@ def main(argv):
   audit.setup(build_base)
 
   if opts.prebuild:
-    verbose([opts.prebuild])
-    rc = subprocess.call(opts.prebuild, shell=True, cwd=build_base, stdin=open(os.devnull))
-    if (rc != 0):
-      sys.exit(2)
+    for cmd in opts.prebuild:
+      verbose([cmd])
+      rc = subprocess.call(cmd, shell=True, cwd=build_base, stdin=open(os.devnull))
+      if (rc != 0):
+        sys.exit(2)
 
   rc = bldcmd.execute_in(bwd)
 

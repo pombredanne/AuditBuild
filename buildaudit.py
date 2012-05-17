@@ -68,7 +68,7 @@ class BuildAudit:
     return self.db[key]['COMMENT']['BLDTIME']
 
   def baseurl(self, key):
-    return self.db[key]['COMMENT']['BASEURL']
+    return self.db[key]['COMMENT']['BASEURL'] if key in self.db else None
 
   def setup(self, indir):
     """Set a unique file reference time and prepare for the build.
@@ -88,8 +88,7 @@ class BuildAudit:
     # against a list of files which predated the build.
     self.pre_existing = {}
     for parent, dir_names, file_names in os.walk(indir):
-      # Assume hidden dirs contain stuff we don't care about
-      dir_names[:] = (nm for nm in dir_names if not nm.startswith('.'))
+      dir_names[:] = (dn for dn in dir_names if not dn.startswith('.svn'))
       for file_name in file_names:
         rpath = os.path.relpath(os.path.join(parent, file_name), indir)
         self.pre_existing[rpath] = True
@@ -97,10 +96,15 @@ class BuildAudit:
     def get_time_past(previous):
       this_time = 0
       while True:
-        with tempfile.TemporaryFile(dir=indir) as fp:
+        #with tempfile.TemporaryFile(dir=indir) as fp: # TODO - restore
+        self.ref_file = '.audit.ref.tmp'
+        ref = os.path.join(indir, self.ref_file)
+        with open(ref, "w") as fp:
           this_time = os.fstat(fp.fileno()).st_mtime
         if this_time > previous:
           break
+        else:
+          os.remove(ref)
         time.sleep(0.1)
       return this_time
 
@@ -115,10 +119,11 @@ class BuildAudit:
     # Note: do NOT use os.walk here.
     # It has a way of updating symlink atimes.
     def visit(data, parent, files):
-      # Assume hidden dirs contain stuff we don't care about
-      if not parent.startswith('.'):
-        for f in files:
-          path = os.path.join(parent, f)
+      if not parent.startswith('.svn'):
+        for fn in files:
+          if fn == self.ref_file:
+            continue
+          path = os.path.join(parent, fn)
           if not os.path.isdir(path):
             rpath = os.path.relpath(path, basedir)
             stats = os.lstat(path)
@@ -131,7 +136,7 @@ class BuildAudit:
                 intermediates[rpath] = 'I'
               else:
                 terminals[rpath] = 'T'
-            elif adelta >= 0:
+            elif adelta >= 0 and rpath in self.pre_existing:
               prereqs[rpath] = 'P'
             else:
               unused[rpath] = 'U'

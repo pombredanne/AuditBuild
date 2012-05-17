@@ -62,14 +62,14 @@ def main(argv):
   parser.add_option('-T', '--print-terminal-targets', action='store_true',
           help='Print terminal targets for the given key(s)')
   parser.add_option('-t', '--print-targets', action='store_true',
-          help='Print targets for the given key(s)')
+          help='Print all targets for the given key(s)')
   parser.add_option('-u', '--print-unused', action='store_true',
           help='Print files present but unused for key(s)')
   parser.add_option('-v', '--verbosity', type='int',
           help='Change the amount of verbosity')
   opts, left = parser.parse_args(argv[1:])
 
-  if not [o for o in vars(opts) if opts.__dict__[o]]:
+  if not [o for o in vars(opts) if opts.__dict__[o] is not None]:
     main([argv[0], "-h"])
 
   shared.verbosity = opts.verbosity if opts.verbosity is not None else 1
@@ -101,8 +101,9 @@ def main(argv):
   if opts.build_time:
     for key in keylist:
       print "%s: %s" % (key, audit.bldtime(key))
-  elif opts.print_sparse_file:
-    print '#', opts.print_sparse_file
+  elif opts.print_sparse_file is not None:
+    if len(opts.print_sparse_file) > 0:
+      print '#', opts.print_sparse_file
     print '['
     print "   (%-*s  'files')," % (60, "'./',")
     for dir in sorted(dirnames(audit.old_prereqs(keylist))):

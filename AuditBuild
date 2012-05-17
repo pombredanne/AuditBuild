@@ -1,0 +1,8 @@
+#!/bin/bash
+
+basename=${0##*/}
+basedir=${0%/*}
+if [[ -d /tools/bin ]]; then
+    PATH=/tools/bin:$PATH
+fi
+exec python "$basedir/${basename?}.py" "$@"

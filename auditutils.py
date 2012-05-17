@@ -36,8 +36,7 @@ def getText(nodelist):
 
 def svn_get_url(dir):
   cmd = ['svn', 'info', '--xml']
-  verbose(cmd)
-  subproc = subprocess.Popen(cmd, cwd=dir, stdout=subprocess.PIPE)
+  subproc = subprocess.Popen(cmd, cwd=dir, stdout=subprocess.PIPE, stderr=open(os.devnull))
   output = subproc.communicate()
   if subproc.returncode != 0:
     sys.exit(2)
@@ -86,6 +85,8 @@ def run_with_stdin(cmd, input):
   verbose(cmd)
   subproc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
   for line in input:
+    if shared.verbosity > 1:
+      print '<', line
     print >> subproc.stdin, line
   subproc.stdin.close()
   if subproc.wait():
