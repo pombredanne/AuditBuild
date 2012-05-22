@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import optparse
+import argparse
 import os
 import re
 import subprocess
@@ -16,58 +16,38 @@ def main(argv):
 
   prog = os.path.basename(argv[0])
 
-  def key_callback(option, opt, value, parser):
-    setattr(parser.values, option.dest, value.split(','))
-
-  msg = '%prog'
-  msg += ' -a|--print-all'
-  msg += ' -b|--build-time'
-  msg += ' -D|--dbname <file>'
-  msg += ' -d|--print-directories'
-  msg += ' -E|--svn-export-dirs <dir>'
-  msg += ' -e|--svn-export-files <dir>'
-  msg += ' -I|--print-intermediates'
-  msg += ' -k|--keys <key,key,...>'
-  msg += ' -l|--list-keys'
-  msg += ' -p|--print-prerequisites'
-  msg += ' -s|--print-sparse-file <comment>'
-  msg += ' -T|--print-terminal-targets'
-  msg += ' -t|--print-targets'
-  msg += ' -u|--print-unused'
-  msg += ' -v|--verbosity <n>'
-  parser = optparse.OptionParser(usage=msg)
-  parser.add_option('-a', '--print-all', action='store_true',
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-a', '--print-all', action='store_true',
           help='Print all involved files for key(s)')
-  parser.add_option('-b', '--build-time', action='store_true',
+  parser.add_argument('-b', '--build-time', action='store_true',
           help='Print the elapsed time of the specified build(s)')
-  parser.add_option('-D', '--dbname', type='string',
+  parser.add_argument('-D', '--dbname',
           help='Path to a database file')
-  parser.add_option('-d', '--print-directories', action='store_true',
+  parser.add_argument('-d', '--print-directories', action='store_true',
           help='Print directories containing prereqs for key(s)')
-  parser.add_option('-E', '--svn-export-dirs', type='string',
+  parser.add_argument('-E', '--svn-export-dirs',
           help='Build a tree containing all files from prerequisite dirs in DIR')
-  parser.add_option('-e', '--svn-export-files', type='string',
+  parser.add_argument('-e', '--svn-export-files',
           help='Build a tree containing just the prerequisites in DIR')
-  parser.add_option('-I', '--print-intermediates', action='store_true',
+  parser.add_argument('-I', '--print-intermediates', action='store_true',
           help='Print intermediates for the given key(s)')
-  parser.add_option('-k', '--keys', type='string',
-          action='callback', callback=key_callback,
-          help='Comma-separated list of keys')
-  parser.add_option('-l', '--list-keys', action='store_true',
+  parser.add_argument('-k', '--keys', action='append',
+          help='List of keys to query')
+  parser.add_argument('-l', '--list-keys', action='store_true',
           help='List all known keys in the given database')
-  parser.add_option('-p', '--print-prerequisites', action='store_true',
+  parser.add_argument('-p', '--print-prerequisites', action='store_true',
           help='Print prerequisites for the given key(s)')
-  parser.add_option('-s', '--print-sparse-file', type='string',
+  parser.add_argument('-s', '--print-sparse-file',
           help='Print a ".sparse" file covering the set of prereqs')
-  parser.add_option('-T', '--print-terminal-targets', action='store_true',
+  parser.add_argument('-T', '--print-terminal-targets', action='store_true',
           help='Print terminal targets for the given key(s)')
-  parser.add_option('-t', '--print-targets', action='store_true',
+  parser.add_argument('-t', '--print-targets', action='store_true',
           help='Print all targets for the given key(s)')
-  parser.add_option('-u', '--print-unused', action='store_true',
+  parser.add_argument('-u', '--print-unused', action='store_true',
           help='Print files present but unused for key(s)')
-  parser.add_option('-v', '--verbosity', type='int',
+  parser.add_argument('-v', '--verbosity', type=int,
           help='Change the amount of verbosity')
-  opts, left = parser.parse_args(argv[1:])
+  opts = parser.parse_args(argv[1:])
 
   if not [o for o in vars(opts) if opts.__dict__[o] is not None]:
     main([argv[0], "-h"])
@@ -80,6 +60,10 @@ def main(argv):
     audit = BuildAudit(opts.dbname)
   else:
     audit = BuildAudit()
+
+  # Check that a database was found
+  with open(audit.dbfile):
+    pass
 
   if opts.keys:
     keylist = opts.keys
@@ -138,6 +122,16 @@ def main(argv):
   return rc
 
 if '__main__' == __name__:
-  sys.exit(main(sys.argv))
+  try:
+    rc = main(sys.argv)
+  except IOError as e:
+    # Workaround for an interpreter bug triggered by SIGPIPE.
+    # See http://code.activestate.com/lists/python-tutor/88460/
+    if "Broken pipe" in e.strerror:
+      rc = 0
+    else:
+      raise
+
+  sys.exit(rc)
 
 # vim: ts=8:sw=2:tw=120:et:

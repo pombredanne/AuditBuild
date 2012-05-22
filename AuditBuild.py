@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
+import argparse
 import datetime
 import fileinput
-import optparse
 import os
 import re
 import shared
@@ -37,60 +37,41 @@ def main(argv):
 
   """
 
-  global prog
-  prog = os.path.basename(argv[0])
-
-  msg = '%prog'
-  msg += ' -b|--base-of-tree <dir>'
-  msg += ' -c|--clean'
-  msg += ' -D|--dbname <file>'
-  msg += ' -E|--extract-dirs-with-fallback <bom>'
-  msg += ' -e|--edit'
-  msg += ' -f|--fresh'
-  msg += ' -k|--key <key>'
-  msg += ' -p|--prebuild <command>'
-  msg += ' -R|--remove-external-tree'
-  msg += ' -r|--retry-in-place'
-  msg += ' -U|--base-url <url>'
-  msg += ' -v|--verbosity <n>'
-  msg += ' -X|--execute-only'
-  msg += ' -x|--external-dir <dir>'
-  msg += ' -- gmake <gmake-args>...'
-  parser = optparse.OptionParser(usage=msg)
-  parser.add_option('-b', '--base-of-tree', type='string',
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-b', '--base-of-tree',
           help='Path to root of source tree')
-  parser.add_option('-c', '--clean', action='store_true',
+  parser.add_argument('-c', '--clean', action='store_true',
           help='Force a clean ahead of the build')
-  parser.add_option('-D', '--dbname', type='string',
+  parser.add_argument('-D', '--dbname',
           help='Path to a database file')
-  parser.add_option('-E', '--extract-dirs-with-fallback', type='string',
+  parser.add_argument('-E', '--extract-dirs-with-fallback',
           help='Pre-populate the build tree from DB or BOM')
-  parser.add_option('-e', '--edit', action='store_true',
-          help='Fix up generated text files: s/<external-dir>//')
-  parser.add_option('-f', '--fresh', action='store_true',
+  parser.add_argument('-e', '--edit', action='store_true',
+          help='Fix up generated text files: s/<external-base>//')
+  parser.add_argument('-f', '--fresh', action='store_true',
           help='Regenerate data for current build from scratch')
-  parser.add_option('-k', '--key', type='string',
-          help='A key uniquely describing what was built')
-  parser.add_option('-p', '--prebuild', type='string', action='append',
+  parser.add_argument('-k', '--key',
+          help='A key to uniquely describe what was built')
+  parser.add_argument('-p', '--prebuild', action='append',
           default=['test ! -d src/include || REUSE_VERSION=1 make -C src/include'],
           help='Setup command(s) to be run prior to the build proper')
-  parser.add_option('-R', '--remove-external-tree', action='store_true',
+  parser.add_argument('-R', '--remove-external-tree', action='store_true',
           help='Remove the external build tree before exiting')
-  parser.add_option('-r', '--retry-in-place', action='store_true',
+  parser.add_argument('-r', '--retry-in-place', action='store_true',
           help='Retry failed external builds in the current directory')
-  parser.add_option('-U', '--base-url', type='string',
+  parser.add_argument('-U', '--base-url',
           help='The svn URL from which to get files')
-  parser.add_option('-v', '--verbosity', type='int',
+  parser.add_argument('-v', '--verbosity', type=int,
           help='Change the amount of verbosity')
-  parser.add_option('-X', '--execute-only', action='store_true',
+  parser.add_argument('-X', '--execute-only', action='store_true',
           help='Skip the auditing and just exec the build command')
-  parser.add_option('-x', '--external-dir', type='string',
-          help='Path of external directory')
+  parser.add_argument('-x', '--external-base',
+          help='Path of external base directory')
 
-  opts, left = parser.parse_args(argv[1:])
-  if opts.edit and not opts.external_dir:
-    parser.error("the --edit option makes no sense without --external-dir")
-  if not left:
+  parser.add_argument('build_command', nargs='+')
+
+  opts = parser.parse_args(argv[1:])
+  if not opts.build_command:
     main([argv[0], "-h"])
 
   shared.verbosity = opts.verbosity if opts.verbosity is not None else 1
@@ -99,16 +80,19 @@ def main(argv):
 
   cwd = os.getcwd()
 
-  if opts.external_dir:
-    external_dir = os.path.abspath(opts.external_dir)
-    build_base = os.path.abspath(external_dir + os.sep + base_dir)
-    bwd = os.path.abspath(external_dir + os.sep + cwd)
+  if opts.external_base or os.getenv('AB_EXTERNAL_BASE') is not None:
+    xd = (opts.external_base if opts.external_base else os.getenv('AB_EXTERNAL_BASE'))
+    external_base = os.path.abspath(xd)
+    build_base = os.path.abspath(external_base + os.sep + base_dir)
+    bwd = os.path.abspath(external_base + os.sep + cwd)
   else:
-    external_dir = None
+    if opts.edit:
+      parser.error("the --edit option makes no sense without --external-base")
+    external_base = None
     build_base = base_dir
     bwd = cwd
 
-  bldcmd = GMakeCommand(left)
+  bldcmd = GMakeCommand(opts.build_command)
   bldcmd.directory = bwd
 
   if opts.dbname:
@@ -146,7 +130,7 @@ def main(argv):
   else:
     opts.fresh = True
 
-  if external_dir:
+  if external_base:
     copy_out_cmd = ['rsync', '-a']
     if opts.fresh:
       copy_out_cmd.append('--exclude=[.]svn*')
@@ -193,7 +177,7 @@ def main(argv):
 
   rc = bldcmd.execute_in(bwd)
 
-  if rc != 0 and external_dir:
+  if rc != 0 and external_base:
     if opts.retry_in_place:
       rc = bldcmd.execute_in(cwd)
       sys.exit(rc)
@@ -209,7 +193,7 @@ def main(argv):
   replace = opts.fresh and rc == 0
   audit.update(key, build_base, bld_time, base_url, replace)
 
-  if external_dir:
+  if external_base:
     if audit.new_targets:
       copy_in_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
       run_with_stdin(copy_in_cmd, audit.new_targets)
@@ -217,7 +201,7 @@ def main(argv):
         # TODO: better to write something like Perl's -T (text) test here
         tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
         if tgts:
-          mldir = external_dir + os.sep
+          mldir = external_base + os.sep
           for line in fileinput.input(tgts, inplace=True):
             sys.stdout.write(line.replace(mldir, '/'))
     if opts.remove_external_tree:
