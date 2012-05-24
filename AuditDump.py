@@ -5,7 +5,6 @@ import os
 import re
 import subprocess
 import sys
-import warnings
 
 import shared
 from auditutils import recreate_dir, verbose, dirnames, svn_export_files, svn_export_dirs
@@ -48,6 +47,9 @@ def main(argv):
   parser.add_argument('-v', '--verbosity', type=int,
           help='Change the amount of verbosity')
   opts = parser.parse_args(argv[1:])
+
+  if (len(argv) < 2):
+    main([argv[0], "-h"])
 
   if not [o for o in vars(opts) if opts.__dict__[o] is not None]:
     main([argv[0], "-h"])

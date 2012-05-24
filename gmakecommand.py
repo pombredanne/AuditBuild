@@ -102,20 +102,20 @@ class GMakeCommand(object):
     else:
       self.tgtkey += 'all'  #just by convention
 
-  def printstats(self):
+  def printstats(self, start_time):
     if shared.verbosity > 0:
-      b = int(self.end_time - self.start_time + 0.5)
+      b = int(self.build_end - self.build_start + 0.5)
       bldstr = str(datetime.timedelta(seconds=b))
-      e = int(time.time() - self.start_time + 0.5)
+      e = int(time.time() - start_time + 0.5)
       elapsed = str(datetime.timedelta(seconds=e))
       print >> sys.stderr, "Elapsed: %s (build time: %s)" % (elapsed, bldstr)
 
-  def execute_in(self, dir):
+  def execute_in(self, dir, start_time):
     verbose(self.argv)
-    self.start_time = time.time()
+    self.build_start = time.time()
     rc = subprocess.call(self.argv, cwd=dir, stdin=open(os.devnull))
-    self.end_time = time.time()
-    atexit.register(GMakeCommand.printstats, self)
+    self.build_end = time.time()
+    atexit.register(GMakeCommand.printstats, self, start_time)
     return rc
 
 # vim: ts=8:sw=2:tw=120:et:

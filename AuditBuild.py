@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 
 from buildaudit import BuildAudit
 from gmakecommand import GMakeCommand
@@ -33,9 +34,11 @@ def main(argv):
   area to a local filesystem, for speed reasons, but that is not
   required. The requirement is that the build filesystem must update
   access times, i.e. not be mounted with the "noatime" option. NFS
-  mounts often employ "noatime" as an optimization.
+  mounts often employ noatime as an optimization.
 
   """
+
+  start_time = time.time()
 
   parser = argparse.ArgumentParser()
   parser.add_argument('-b', '--base-of-tree',
@@ -70,8 +73,11 @@ def main(argv):
 
   parser.add_argument('build_command', nargs='+')
 
-  opts = parser.parse_args(argv[1:])
-  if not opts.build_command:
+  if (len(argv) > 1):
+    opts = parser.parse_args(argv[1:])
+    if not opts.build_command:
+      main([argv[0], "-h"])
+  else:
     main([argv[0], "-h"])
 
   shared.verbosity = opts.verbosity if opts.verbosity is not None else 1
@@ -117,7 +123,12 @@ def main(argv):
   if bldcmd.dry_run:
     sys.exit(0)
   elif bldcmd.special_case or opts.execute_only:
-    rc = bldcmd.execute_in(cwd)
+    for cmd in opts.prebuild:
+      verbose([cmd])
+      rc = subprocess.call(cmd, shell=True, cwd=build_base, stdin=open(os.devnull))
+      if (rc != 0):
+        sys.exit(2)
+    rc = bldcmd.execute_in(cwd, start_time)
     sys.exit(rc)
 
   if audit.has(key):
@@ -168,18 +179,17 @@ def main(argv):
 
   audit.setup(build_base)
 
-  if opts.prebuild:
-    for cmd in opts.prebuild:
-      verbose([cmd])
-      rc = subprocess.call(cmd, shell=True, cwd=build_base, stdin=open(os.devnull))
-      if (rc != 0):
-        sys.exit(2)
+  for cmd in opts.prebuild:
+    verbose([cmd])
+    rc = subprocess.call(cmd, shell=True, cwd=build_base, stdin=open(os.devnull))
+    if (rc != 0):
+      sys.exit(2)
 
-  rc = bldcmd.execute_in(bwd)
+  rc = bldcmd.execute_in(bwd, start_time)
 
   if rc != 0 and external_base:
     if opts.retry_in_place:
-      rc = bldcmd.execute_in(cwd)
+      rc = bldcmd.execute_in(cwd, start_time)
       sys.exit(rc)
     elif not opts.fresh:
       nargv = argv[:]
@@ -188,25 +198,31 @@ def main(argv):
       rc = subprocess.call(nargv)
       sys.exit(rc)
 
-  seconds = bldcmd.end_time - bldcmd.start_time
-  bld_time = str(datetime.timedelta(seconds=int(seconds)))
-  replace = opts.fresh and rc == 0
-  audit.update(key, build_base, bld_time, base_url, replace)
+  if audit.noatime():
+    warnings.warn("audit skipped - build in noatime mount")
+    if external_base:
+      copy_in_cmd = ['rsync', '-a', '--exclude=*.tmp', build_base + os.sep, base_dir]
+      run_with_stdin(copy_in_cmd, [])
+  else:
+    seconds = bldcmd.build_end - bldcmd.build_start
+    bld_time = str(datetime.timedelta(seconds=int(seconds)))
+    replace = opts.fresh and rc == 0
+    audit.update(key, build_base, bld_time, base_url, replace)
+    if external_base:
+      if audit.new_targets:
+        copy_in_cmd = ['rsync', '-a', '--files-from=-', build_base + os.sep, base_dir]
+        run_with_stdin(copy_in_cmd, audit.new_targets)
+        if opts.edit:
+          # TODO: better to write something like Perl's -T (text) test here
+          tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
+          if tgts:
+            mldir = external_base + os.sep
+            for line in fileinput.input(tgts, inplace=True):
+              sys.stdout.write(line.replace(mldir, '/'))
 
-  if external_base:
-    if audit.new_targets:
-      copy_in_cmd = ['rsync', '-a', build_base + os.sep, base_dir, '--files-from=-']
-      run_with_stdin(copy_in_cmd, audit.new_targets)
-      if opts.edit:
-        # TODO: better to write something like Perl's -T (text) test here
-        tgts = [os.path.join(base_dir, t) for t in audit.new_targets if re.search(r'\.(cmd|depend|d|flags)$', t)]
-        if tgts:
-          mldir = external_base + os.sep
-          for line in fileinput.input(tgts, inplace=True):
-            sys.stdout.write(line.replace(mldir, '/'))
-    if opts.remove_external_tree:
-      verbose("Removing %s/..." % (build_base))
-      shutil.rmtree(build_base)
+  if external_base and opts.remove_external_tree:
+    verbose("Removing %s/..." % (build_base))
+    shutil.rmtree(build_base)
 
   return rc
 

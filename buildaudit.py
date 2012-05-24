@@ -93,23 +93,33 @@ class BuildAudit:
         rpath = os.path.relpath(os.path.join(parent, file_name), indir)
         self.pre_existing[rpath] = True
 
+    self.ref_file = '.audit-ref.tmp'
+    ref = os.path.join(indir, self.ref_file)
+
     def get_time_past(previous):
-      this_time = 0
+      this_mtime = this_atime = 0
       while True:
-        #with tempfile.TemporaryFile(dir=indir) as fp: # TODO - restore
-        self.ref_file = '.audit.ref.tmp'
-        ref = os.path.join(indir, self.ref_file)
-        with open(ref, "w") as fp:
-          this_time = os.fstat(fp.fileno()).st_mtime
-        if this_time > previous:
+        with open(ref, "w+") as fp:
+          stats = os.fstat(fp.fileno())
+          this_mtime = stats.st_mtime
+          this_atime = stats.st_atime
+        if this_mtime > previous:
           break
         else:
           os.remove(ref)
         time.sleep(0.1)
-      return this_time
+      return this_mtime, this_atime
 
-    old_time = get_time_past(0)
-    self.reftime = get_time_past(old_time)
+    mtime1, atime1 = get_time_past(0)
+    mtime2, atime2 = get_time_past(mtime1)
+    if atime2 > atime1:
+      self.reftime = mtime2
+    else:
+      self.reftime = -1
+      os.remove(ref)
+
+  def noatime(self):
+    return self.reftime == -1
 
   def update(self, key, basedir, bldtime, baseurl, replace):
     prereqs = {}
@@ -146,7 +156,7 @@ class BuildAudit:
     self.new_targets.update(terminals)
 
     if not prereqs:
-      warnings.warn("Empty prereq set - check for 'noatime' mount")
+      warnings.warn("empty prereq set - check for 'noatime' mount")
     elif replace:
       refstr = "%s (%s)" % (str(self.reftime), time.ctime(self.reftime))
       self.db[key] = {
